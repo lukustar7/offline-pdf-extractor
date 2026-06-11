@@ -9,13 +9,13 @@ struct PDFExtractorApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 960, minHeight: 650)
+                .frame(minWidth: 1000, minHeight: 700)
         }
         .windowStyle(.hiddenTitleBar) // 隐藏标题栏，使 UI 更一体化、现代化
     }
 }
 
-// MARK: - 核心 PDF 处理与 OCR 引擎
+// MARK: - 核心 PDF 处理与 OCR / 本地 AI 引擎
 class PDFExtractorEngine: ObservableObject {
     @Published var isProcessing = false
     @Published var progress: Double = 0.0
@@ -37,6 +37,24 @@ class PDFExtractorEngine: ObservableObject {
     
     private var pdfDocument: PDFDocument?
     private var pdfURL: URL?
+    
+    // === 本地 AI 净化模块状态 ===
+    @Published var aiApiBaseUrl: String = "http://localhost:11434/v1" // 默认 Ollama API 地址
+    @Published var aiApiKey: String = ""
+    @Published var aiSelectedModel: String = ""
+    @Published var aiModels: [String] = []
+    @Published var isAIFetchingModels = false
+    @Published var isAIProcessing = false
+    @Published var aiProgressStatus: String = ""
+    @Published var aiResultText: String = ""
+    
+    // 模型列表响应结构
+    struct AIModelResponse: Codable {
+        let data: [AIModelData]
+    }
+    struct AIModelData: Codable {
+        let id: String
+    }
     
     /// 加载 PDF 文件并对其进行初始化扫描
     func loadPDF(url: URL) -> Bool {
@@ -78,6 +96,10 @@ class PDFExtractorEngine: ObservableObject {
         self.isProcessing = false
         self.currentStatus = "未加载文件"
         self.logOutput = ""
+        
+        // AI 状态清除
+        self.aiResultText = ""
+        self.aiProgressStatus = ""
     }
     
     /// 扫描 PDF 的前若干页，统计高频出现的疑似水印文字
@@ -359,12 +381,11 @@ class PDFExtractorEngine: ObservableObject {
         // 3. 绘制 PDF 页面
         page.draw(with: .mediaBox, to: context.cgContext)
         
-        // 4. 水印擦除：用白色填充水印 selections 的 bounds。
-        // PDFSelection 是一行行的，对于倾斜水印，selectionsByLine 会把它分割为精细的单行/断行，覆盖它的 bounds 伤及正文的区域极其微小。
+        // 4. 水印擦除：用白色填充水印 selections 的 bounds
         NSColor.white.set()
         for selection in watermarkSelections {
             let bounds = selection.bounds(for: page)
-            // 向外微调 1.5 个像素，防止由于抗锯齿边缘而出现文字的笔画残留阴影，干扰 OCR
+            // 向外微调 1.5 个像素，防止笔画残留阴影干扰 OCR
             let coverRect = bounds.insetBy(dx: -1.5, dy: -1.5)
             coverRect.fill()
         }
@@ -413,6 +434,162 @@ class PDFExtractorEngine: ObservableObject {
             completion("")
         }
     }
+    
+    // === 本地 AI 净化方法 ===
+    
+    /// 连接本地 AI 并获取模型列表
+    func fetchAIModels() {
+        guard let url = URL(string: aiApiBaseUrl + "/models") else {
+            self.updateAIProgressStatus("❌ 无效的 API 服务地址")
+            return
+        }
+        
+        isAIFetchingModels = true
+        updateAIProgressStatus("正在获取模型列表...")
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 4.0
+        
+        if !aiApiKey.isEmpty {
+            request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
+        }
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                self.isAIFetchingModels = false
+            }
+            
+            if let error = error {
+                self.updateAIProgressStatus("❌ 连接失败: \(error.localizedDescription)")
+                return
+            }
+            
+            guard let data = data else {
+                self.updateAIProgressStatus("❌ 服务器未返回数据")
+                return
+            }
+            
+            do {
+                let decoded = try JSONDecoder().decode(AIModelResponse.self, from: data)
+                let modelIds = decoded.data.map { $0.id }
+                
+                DispatchQueue.main.async {
+                    self.aiModels = modelIds
+                    if let first = modelIds.first {
+                        self.aiSelectedModel = first
+                    }
+                    self.updateAIProgressStatus("✅ 成功拉取到 \(modelIds.count) 个本地模型")
+                }
+            } catch {
+                // 部分本地 AI 接口没有 models 节点，或者是返回形式稍微不一样，尝试简单解析
+                if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                   let dataArray = json["data"] as? [[String: Any]] {
+                    let ids = dataArray.compactMap { $0["id"] as? String }
+                    DispatchQueue.main.async {
+                        self.aiModels = ids
+                        if let first = ids.first {
+                            self.aiSelectedModel = first
+                        }
+                        self.updateAIProgressStatus("✅ 成功获取 \(ids.count) 个模型")
+                    }
+                } else {
+                    self.updateAIProgressStatus("❌ 无法解析模型列表，请确认是否兼容 OpenAI")
+                }
+            }
+        }.resume()
+    }
+    
+    /// 发送文本至本地 AI 进行格式排版与字词净化
+    func processTextWithAI(inputText: String, systemPrompt: String) {
+        let cleanInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanInput.isEmpty {
+            self.updateAIProgressStatus("❌ 原始提取的文本为空，请先提取文本！")
+            return
+        }
+        
+        guard let url = URL(string: aiApiBaseUrl + "/chat/completions") else {
+            self.updateAIProgressStatus("❌ 无效的 API 服务地址")
+            return
+        }
+        
+        isAIProcessing = true
+        updateAIProgressStatus("本地 AI 正在润色校对中，这可能需要较长时间...")
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 180.0 // 本地大模型推理可能很慢，设置 3 分钟超时
+        
+        if !aiApiKey.isEmpty {
+            request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
+        }
+        
+        let messages: [[String: String]] = [
+            ["role": "system", "content": systemPrompt],
+            ["role": "user", "content": cleanInput]
+        ]
+        
+        let requestBody: [String: Any] = [
+            "model": aiSelectedModel.isEmpty ? "default" : aiSelectedModel,
+            "messages": messages,
+            "temperature": 0.1, // 低温度以保证极高字词还原度和纠错规范
+            "stream": false
+        ]
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+        } catch {
+            self.updateAIProgressStatus("❌ 序列化请求失败")
+            self.isAIProcessing = false
+            return
+        }
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                self.isAIProcessing = false
+            }
+            
+            if let error = error {
+                self.updateAIProgressStatus("❌ 请求失败: \(error.localizedDescription)")
+                return
+            }
+            
+            guard let data = data else {
+                self.updateAIProgressStatus("❌ 未收到 AI 端回复")
+                return
+            }
+            
+            do {
+                if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
+                    if let choices = json["choices"] as? [[String: Any]],
+                       let first = choices.first,
+                       let message = first["message"] as? [String: Any],
+                       let content = message["content"] as? String {
+                        
+                        DispatchQueue.main.async {
+                            self.aiResultText = content
+                            self.updateAIProgressStatus("✅ 本地 AI 净化校对完成！")
+                        }
+                    } else if let errorObj = json["error"] as? [String: Any],
+                              let msg = errorObj["message"] as? String {
+                        self.updateAIProgressStatus("❌ AI 服务端返回错误: \(msg)")
+                    } else {
+                        self.updateAIProgressStatus("❌ 无法解析回复 JSON 结构（未兼容 OpenAI）")
+                    }
+                }
+            } catch {
+                self.updateAIProgressStatus("❌ 解析回复内容 JSON 错误")
+                print("解析 AI 聊天失败: \(error)")
+            }
+        }.resume()
+    }
+    
+    private func updateAIProgressStatus(_ status: String) {
+        DispatchQueue.main.async {
+            self.aiProgressStatus = status
+        }
+    }
 }
 
 // MARK: - 支持的文字提取模式
@@ -451,13 +628,33 @@ struct ContentView: View {
     @State private var dragOver = false
     @State private var ignoreCase = true
     @State private var extractionMode: ExtractionMode = .smart
-    @State private var eraseImageWatermark = false // 是否要在图片中白块擦除，默认通过文本后处理过滤，安全不伤正文
+    @State private var eraseImageWatermark = false // 是否要在图片中白块擦除
     @State private var customWatermarks = ""
     @State private var resultText = ""
     @State private var txtFileURL: URL? = nil
     
-    // 渐变背景配色
-    let purpleGrad = LinearGradient(
+    // 右侧标签卡片切换：0 -> 原始提取文本, 1 -> AI 优化文本
+    @State private var selectedTab = 0
+    
+    // 折叠菜单展开管理
+    @State private var isSettingsExpanded = true
+    @State private var isWatermarkExpanded = true
+    @State private var isAIExpanded = true
+    
+    // 高级 AI 优化提示词
+    @State private var systemPrompt = """
+你是一个极为严谨的文本排版与错别字纠正助手。你将接收一段由 OCR 引擎从扫描件中识别出的原始文本。
+请执行以下处理：
+1. 保持原文的主体结构和逻辑含义完全不变，切勿重写、扩写或精简正文内容。
+2. 修复文本中由于 OCR 识别误差导致的可能错字、别字（例如把“而且”识别为“面且”，把“我们”识别为“我门”）。
+3. 调整断行和标点符号，使排版符合正常的中文书写规范。
+4. 【核心铁律】：每当你在排版、字词上修改了任何内容，你必须在修改后的内容旁边，紧随其后附上大括号，格式为：“【识别是：[原始错误词]，修改为：[修改后词]】”。
+例如：如果原文是“面且我门要去公园”，纠正后应输出：“而且【识别是：面且，修改为：而且】我们【识别是：我门，修改为：我们】要去公园”。
+5. 只输出处理纠正后的最终文本，严禁夹带任何多余的开场白、解释、Markdown 标记或总结语！
+"""
+    
+    // 渐变背景配置
+    let darkGradient = LinearGradient(
         colors: [Color(nsColor: .controlBackgroundColor), Color(nsColor: .windowBackgroundColor)],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
@@ -466,7 +663,7 @@ struct ContentView: View {
     var body: some View {
         HStack(spacing: 0) {
             // ==================== 左侧控制侧边栏 ====================
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 0) {
                 // 顶部标题
                 HStack(spacing: 10) {
                     Image(systemName: "doc.text.magnifyingglass")
@@ -476,24 +673,27 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("PDF 本地去水印")
                             .font(.system(size: 16, weight: .bold))
-                        Text("100% 离线文字提取工具")
+                        Text("100% 离线文字提取与 AI 净化")
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 18)
                 .padding(.top, 24)
+                .padding(.bottom, 16)
                 
                 Divider()
                     .padding(.horizontal, 16)
                 
+                // 设置滚动列表
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 14) {
                         // 1. 文件导入区域
                         if engine.pdfFileName.isEmpty {
                             DropZoneView(isDragOver: $dragOver) { url in
                                 _ = engine.loadPDF(url: url)
                             }
+                            .padding(.top, 10)
                         } else {
                             FileInfoView(
                                 name: engine.pdfFileName,
@@ -503,92 +703,245 @@ struct ContentView: View {
                                     engine.clear()
                                     resultText = ""
                                     txtFileURL = nil
+                                    selectedTab = 0
                                 }
                             )
+                            .padding(.top, 10)
                         }
                         
                         if !engine.pdfFileName.isEmpty {
                             // 2. 提取参数设置
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("提取设置")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.secondary)
-                                
-                                Picker("提取模式", selection: $extractionMode) {
-                                    ForEach(ExtractionMode.allCases) { mode in
-                                        Text(mode.rawValue).tag(mode)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Button(action: { withAnimation { isSettingsExpanded.toggle() } }) {
+                                    HStack {
+                                        Text("提取设置")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        Image(systemName: isSettingsExpanded ? "chevron.down" : "chevron.right")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.secondary)
                                     }
+                                    .padding(.vertical, 8)
                                 }
-                                .pickerStyle(.radioGroup)
-                                .horizontalRadioLayout()
+                                .buttonStyle(.plain)
                                 
-                                Toggle("忽略字母大小写", isOn: $ignoreCase)
-                                    .toggleStyle(.checkbox)
-                                
-                                Toggle("擦除图片中的水印区域", isOn: $eraseImageWatermark)
-                                    .toggleStyle(.checkbox)
-                                
-                                Text("💡 默认通过后处理技术无损净化水印，不伤正文。如果水印严重干扰识别，可开启上面选项进行像素擦除。")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                                    .lineSpacing(2)
+                                if isSettingsExpanded {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        Picker("提取模式", selection: $extractionMode) {
+                                            ForEach(ExtractionMode.allCases) { mode in
+                                                Text(mode.rawValue).tag(mode)
+                                            }
+                                        }
+                                        .pickerStyle(.radioGroup)
+                                        .horizontalRadioLayout()
+                                        
+                                        Toggle("忽略字母大小写", isOn: $ignoreCase)
+                                            .toggleStyle(.checkbox)
+                                        
+                                        Toggle("擦除图片中的水印区域", isOn: $eraseImageWatermark)
+                                            .toggleStyle(.checkbox)
+                                        
+                                        Text("💡 默认通过后处理技术无损净化水印，不伤正文。如果水印严重干扰识别，可开启上面选项进行像素擦除。")
+                                            .font(.system(size: 9.5))
+                                            .foregroundColor(.secondary)
+                                            .lineSpacing(2)
+                                    }
+                                    .padding(.top, 8)
+                                    .padding(.bottom, 12)
+                                }
                             }
-                            .padding(14)
-                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
                             .cornerRadius(12)
                             
                             // 3. 水印管理区域
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("活字水印过滤管理")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.secondary)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Button(action: { withAnimation { isWatermarkExpanded.toggle() } }) {
+                                    HStack {
+                                        Text("活字水印过滤管理")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        Image(systemName: isWatermarkExpanded ? "chevron.down" : "chevron.right")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.plain)
                                 
-                                if engine.watermarkCandidates.isEmpty {
-                                    Text("未检测到高频活字水印。")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                        .padding(.vertical, 4)
-                                } else {
-                                    Text("检测到以下疑似水印词（已默认勾选）：")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                    
-                                    ForEach(0..<engine.watermarkCandidates.count, id: \.self) { idx in
-                                        Toggle(isOn: $engine.watermarkCandidates[idx].isSelected) {
-                                            HStack {
-                                                Text(engine.watermarkCandidates[idx].text)
-                                                    .font(.system(size: 12, weight: .medium))
-                                                    .lineLimit(1)
-                                                Spacer()
-                                                Text("\(engine.watermarkCandidates[idx].occurrenceCount) 页")
-                                                    .font(.system(size: 10))
-                                                    .foregroundColor(.secondary)
+                                if isWatermarkExpanded {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        if engine.watermarkCandidates.isEmpty {
+                                            Text("未检测到高频活字水印。")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.secondary)
+                                                .padding(.vertical, 4)
+                                        } else {
+                                            Text("勾选要过滤的水印字词：")
+                                                .font(.system(size: 10.5))
+                                                .foregroundColor(.secondary)
+                                            
+                                            ForEach(0..<engine.watermarkCandidates.count, id: \.self) { idx in
+                                                Toggle(isOn: $engine.watermarkCandidates[idx].isSelected) {
+                                                    HStack {
+                                                        Text(engine.watermarkCandidates[idx].text)
+                                                            .font(.system(size: 11.5, weight: .medium))
+                                                            .lineLimit(1)
+                                                        Spacer()
+                                                        Text("\(engine.watermarkCandidates[idx].occurrenceCount) 页")
+                                                            .font(.system(size: 10))
+                                                            .foregroundColor(.secondary)
+                                                    }
+                                                }
+                                                .toggleStyle(.checkbox)
                                             }
                                         }
-                                        .toggleStyle(.checkbox)
+                                        
+                                        Divider()
+                                            .padding(.vertical, 4)
+                                        
+                                        Text("手动添加过滤词（逗号或换行隔开）:")
+                                            .font(.system(size: 10.5))
+                                            .foregroundColor(.secondary)
+                                        
+                                        TextEditor(text: $customWatermarks)
+                                            .font(.system(.body, design: .default))
+                                            .frame(height: 50)
+                                            .padding(4)
+                                            .background(Color(nsColor: .textBackgroundColor))
+                                            .cornerRadius(6)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 6)
+                                                    .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+                                            )
                                     }
+                                    .padding(.top, 8)
+                                    .padding(.bottom, 12)
                                 }
-                                
-                                Divider()
-                                    .padding(.vertical, 4)
-                                
-                                Text("自定义过滤词（用逗号或回车分隔）:")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
-                                
-                                TextEditor(text: $customWatermarks)
-                                    .font(.system(size: 11))
-                                    .frame(height: 50)
-                                    .padding(4)
-                                    .background(Color(nsColor: .textBackgroundColor))
-                                    .cornerRadius(6)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                                    )
                             }
-                            .padding(14)
-                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+                            .cornerRadius(12)
+                            
+                            // 4. 本地 AI 模块配置区域
+                            VStack(alignment: .leading, spacing: 0) {
+                                Button(action: { withAnimation { isAIExpanded.toggle() } }) {
+                                    HStack {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "cpu.fill")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.purple)
+                                            Text("本地 AI 净化助手")
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: isAIExpanded ? "chevron.down" : "chevron.right")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.plain)
+                                
+                                if isAIExpanded {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("API 服务地址:")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.secondary)
+                                            TextField("http://localhost:11434/v1", text: $engine.aiApiBaseUrl)
+                                                .textFieldStyle(.roundedBorder)
+                                            
+                                            HStack(spacing: 8) {
+                                                Button("Ollama") {
+                                                    engine.aiApiBaseUrl = "http://localhost:11434/v1"
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+                                                
+                                                Button("LM Studio") {
+                                                    engine.aiApiBaseUrl = "http://localhost:1234/v1"
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+                                            }
+                                        }
+                                        
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            HStack {
+                                                Text("AI 模型名称:")
+                                                    .font(.system(size: 10))
+                                                    .foregroundColor(.secondary)
+                                                Spacer()
+                                                if engine.isAIFetchingModels {
+                                                    ProgressView()
+                                                        .controlSize(.small)
+                                                        .scaleEffect(0.6)
+                                                }
+                                            }
+                                            
+                                            if engine.aiModels.isEmpty {
+                                                TextField("请输入模型 (如 qwen2.5-7b-instruct)", text: $engine.aiSelectedModel)
+                                                    .textFieldStyle(.roundedBorder)
+                                            } else {
+                                                Picker("选择模型", selection: $engine.aiSelectedModel) {
+                                                    ForEach(engine.aiModels, id: \.self) { model in
+                                                        Text(model).tag(model)
+                                                    }
+                                                }
+                                                .pickerStyle(.menu)
+                                                .labelsHidden()
+                                            }
+                                            
+                                            Button(action: {
+                                                engine.fetchAIModels()
+                                            }) {
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                                    Text("获取本地可用模型")
+                                                }
+                                                .frame(maxWidth: .infinity)
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                        }
+                                        
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("排版与纠错系统提示词:")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.secondary)
+                                            TextEditor(text: $systemPrompt)
+                                                .font(.system(size: 9.5))
+                                                .frame(height: 70)
+                                                .padding(3)
+                                                .background(Color(nsColor: .textBackgroundColor))
+                                                .cornerRadius(6)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 6)
+                                                        .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+                                                )
+                                        }
+                                        
+                                        if !engine.aiProgressStatus.isEmpty {
+                                            Text(engine.aiProgressStatus)
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(.purple)
+                                                .lineLimit(2)
+                                                .padding(.top, 2)
+                                        }
+                                    }
+                                    .padding(.top, 8)
+                                    .padding(.bottom, 12)
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
                             .cornerRadius(12)
                         }
                     }
@@ -600,42 +953,68 @@ struct ContentView: View {
                 
                 // 底部开始按钮
                 if !engine.pdfFileName.isEmpty && !engine.isProcessing {
-                    Button(action: {
-                        let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
-                        engine.extractText(
-                            activeWatermarks: active,
-                            customWatermarks: customWatermarks,
-                            ignoreCase: ignoreCase,
-                            mode: extractionMode,
-                            eraseImageWatermark: eraseImageWatermark
-                        ) { result, url in
-                            self.resultText = result
-                            self.txtFileURL = url
+                    VStack(spacing: 8) {
+                        Button(action: {
+                            let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
+                            engine.extractText(
+                                activeWatermarks: active,
+                                customWatermarks: customWatermarks,
+                                ignoreCase: ignoreCase,
+                                mode: extractionMode,
+                                eraseImageWatermark: eraseImageWatermark
+                            ) { result, url in
+                                self.resultText = result
+                                self.txtFileURL = url
+                                self.selectedTab = 0 // 回到原始文本
+                            }
+                        }) {
+                            Text("开始提取文字")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 11)
+                                .background(
+                                    LinearGradient(colors: [.purple, .blue], startPoint: .leading, endPoint: .trailing)
+                                )
+                                .cornerRadius(8)
+                                .shadow(color: Color.purple.opacity(0.2), radius: 6, x: 0, y: 3)
                         }
-                    }) {
-                        Text("开始提取文字")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(
-                                LinearGradient(colors: [.purple, .blue], startPoint: .leading, endPoint: .trailing)
-                            )
-                            .cornerRadius(8)
-                            .shadow(color: Color.purple.opacity(0.3), radius: 6, x: 0, y: 3)
+                        .buttonStyle(.plain)
+                        
+                        if !resultText.isEmpty && !engine.isAIProcessing {
+                            Button(action: {
+                                selectedTab = 1 // 切换到 AI Tab
+                                engine.processTextWithAI(inputText: resultText, systemPrompt: systemPrompt)
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "sparkles")
+                                    Text("发送至本地 AI 净化")
+                                }
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 9)
+                                .background(
+                                    LinearGradient(colors: [.purple, .pink], startPoint: .leading, endPoint: .trailing)
+                                )
+                                .cornerRadius(8)
+                                .shadow(color: Color.pink.opacity(0.25), radius: 5, x: 0, y: 2)
+                            }
+                            .buttonStyle(.plain)
+                            .transition(.opacity.combined(with: .scale))
+                        }
                     }
-                    .buttonStyle(.plain)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 24)
                 }
             }
-            .frame(width: 380)
+            .frame(width: 400)
             .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
             
             // ==================== 右侧处理状态与结果展示区 ====================
             VStack(spacing: 0) {
                 if engine.isProcessing {
-                    // 处理中状态
+                    // 原始文本提取中状态
                     VStack(spacing: 24) {
                         Spacer()
                         
@@ -663,81 +1042,207 @@ struct ContentView: View {
                                 .cornerRadius(8)
                                 .lineSpacing(4)
                         }
-                        .frame(width: 480, height: 180)
+                        .frame(width: 500, height: 180)
                         .padding(.top, 10)
                         
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if !resultText.isEmpty {
-                    // 处理完成后的结果展示区
-                    VStack(alignment: .leading, spacing: 16) {
+                    // 重构的文本展示卡片区，双栏 Tab 视图
+                    VStack(alignment: .leading, spacing: 0) {
+                        // 顶部自定义精美 TabBar
                         HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("提取文字预览")
-                                    .font(.system(size: 16, weight: .bold))
-                                if let url = txtFileURL {
-                                    Text("已保存至: \(url.path)")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            
-                            Spacer()
-                            
-                            HStack(spacing: 10) {
-                                Button(action: {
-                                    let pasteboard = NSPasteboard.general
-                                    pasteboard.clearContents()
-                                    pasteboard.setString(resultText, forType: .string)
-                                    // 显示一个小 Toast 或是修改按钮文字，这里直接用状态做提示
-                                }) {
+                            HStack(spacing: 4) {
+                                Button(action: { selectedTab = 0 }) {
                                     HStack(spacing: 4) {
-                                        Image(systemName: "doc.on.doc")
-                                        Text("复制全部")
+                                        Image(systemName: "doc.text")
+                                        Text("原始提取文本")
                                     }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(Color.blue.opacity(0.1))
-                                    .foregroundColor(.blue)
+                                    .font(.system(size: 12.5, weight: selectedTab == 0 ? .bold : .medium))
+                                    .padding(.vertical, 7)
+                                    .padding(.horizontal, 14)
+                                    .background(selectedTab == 0 ? Color.blue.opacity(0.15) : Color.clear)
+                                    .foregroundColor(selectedTab == 0 ? .blue : .primary)
                                     .cornerRadius(6)
                                 }
                                 .buttonStyle(.plain)
                                 
-                                if let url = txtFileURL {
+                                Button(action: { selectedTab = 1 }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "sparkles")
+                                        Text("本地 AI 纠错净化")
+                                    }
+                                    .font(.system(size: 12.5, weight: selectedTab == 1 ? .bold : .medium))
+                                    .padding(.vertical, 7)
+                                    .padding(.horizontal, 14)
+                                    .background(selectedTab == 1 ? Color.purple.opacity(0.15) : Color.clear)
+                                    .foregroundColor(selectedTab == 1 ? .purple : .primary)
+                                    .cornerRadius(6)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(3)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(8)
+                            
+                            Spacer()
+                            
+                            // 右侧动作操作
+                            HStack(spacing: 10) {
+                                if selectedTab == 0 {
+                                    // 原始文本复制
                                     Button(action: {
-                                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                                        let pasteboard = NSPasteboard.general
+                                        pasteboard.clearContents()
+                                        pasteboard.setString(resultText, forType: .string)
                                     }) {
                                         HStack(spacing: 4) {
-                                            Image(systemName: "folder")
-                                            Text("在 Finder 中显示")
+                                            Image(systemName: "doc.on.doc")
+                                            Text("复制原始")
                                         }
                                         .padding(.horizontal, 12)
                                         .padding(.vertical, 6)
-                                        .background(Color.purple.opacity(0.1))
-                                        .foregroundColor(.purple)
+                                        .background(Color.blue.opacity(0.1))
+                                        .foregroundColor(.blue)
                                         .cornerRadius(6)
                                     }
                                     .buttonStyle(.plain)
+                                    
+                                    if let url = txtFileURL {
+                                        Button(action: {
+                                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                                        }) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "folder")
+                                                Text("在 Finder 中显示")
+                                            }
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(Color.purple.opacity(0.1))
+                                            .foregroundColor(.purple)
+                                            .cornerRadius(6)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                } else {
+                                    // AI 文本复制
+                                    if !engine.aiResultText.isEmpty {
+                                        Button(action: {
+                                            let pasteboard = NSPasteboard.general
+                                            pasteboard.clearContents()
+                                            pasteboard.setString(engine.aiResultText, forType: .string)
+                                        }) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "doc.on.doc")
+                                                Text("复制净化文本")
+                                            }
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(Color.purple.opacity(0.15))
+                                            .foregroundColor(.purple)
+                                            .cornerRadius(6)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
                                 }
                             }
                         }
                         .padding(.horizontal, 24)
-                        .padding(.top, 24)
+                        .padding(.top, 20)
+                        .padding(.bottom, 12)
                         
                         Divider()
                             .padding(.horizontal, 24)
                         
-                        TextEditor(text: $resultText)
-                            .font(.system(.body, design: .default))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(Color(nsColor: .textBackgroundColor))
-                            .cornerRadius(8)
-                            .shadow(color: Color.black.opacity(0.02), radius: 5, x: 0, y: 2)
-                            .padding(.horizontal, 24)
-                            .padding(.bottom, 24)
+                        // Tab 内容区域
+                        if selectedTab == 0 {
+                            TextEditor(text: $resultText)
+                                .font(.system(.body, design: .default))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color(nsColor: .textBackgroundColor))
+                                .cornerRadius(8)
+                                .shadow(color: Color.black.opacity(0.02), radius: 5, x: 0, y: 2)
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 20)
+                        } else {
+                            // AI Tab 内容
+                            if engine.isAIProcessing {
+                                // AI 正在处理状态
+                                VStack(spacing: 20) {
+                                    Spacer()
+                                    ProgressView()
+                                        .controlSize(.large)
+                                    VStack(spacing: 6) {
+                                        Text("本地 AI 正在推理润色...")
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text(engine.aiProgressStatus)
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.secondary)
+                                            .multilineTextAlignment(.center)
+                                            .padding(.horizontal, 40)
+                                    }
+                                    Spacer()
+                                }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            } else if !engine.aiResultText.isEmpty {
+                                // 展示 AI 纠错净化文本
+                                TextEditor(text: $engine.aiResultText)
+                                    .font(.system(.body, design: .default))
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(Color(nsColor: .textBackgroundColor))
+                                    .cornerRadius(8)
+                                    .shadow(color: Color.black.opacity(0.02), radius: 5, x: 0, y: 2)
+                                    .padding(.horizontal, 24)
+                                    .padding(.vertical, 20)
+                            } else {
+                                // AI 未开始的空白引导状态
+                                VStack(spacing: 16) {
+                                    Spacer()
+                                    
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 48))
+                                        .foregroundStyle(LinearGradient(colors: [.purple, .pink], startPoint: .top, endPoint: .bottom))
+                                    
+                                    Text("本地 AI 文本净化")
+                                        .font(.system(size: 15, weight: .bold))
+                                    
+                                    Text("本地 AI 可以智能修复 OCR 扫描产生的错别字，并调整段落排版。\n所有的修改都会使用【大括号对】标出，确保可读可查。")
+                                        .font(.system(size: 11.5))
+                                        .foregroundColor(.secondary)
+                                        .multilineTextAlignment(.center)
+                                        .lineSpacing(4)
+                                        .padding(.horizontal, 50)
+                                    
+                                    Button(action: {
+                                        engine.processTextWithAI(inputText: resultText, systemPrompt: systemPrompt)
+                                    }) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "sparkles")
+                                            Text("一键开始本地 AI 净化")
+                                        }
+                                        .font(.system(size: 12.5, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.vertical, 9)
+                                        .padding(.horizontal, 24)
+                                        .background(LinearGradient(colors: [.purple, .blue], startPoint: .leading, endPoint: .trailing))
+                                        .cornerRadius(8)
+                                    }
+                                    .buttonStyle(.plain)
+                                    
+                                    if !engine.aiProgressStatus.isEmpty {
+                                        Text(engine.aiProgressStatus)
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.purple)
+                                    }
+                                    
+                                    Spacer()
+                                }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -759,7 +1264,7 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(purpleGrad)
+            .background(darkGradient)
         }
         .environment(\.colorScheme, .dark) // 默认使用更具科技感和高端视觉的深色模式
     }
@@ -787,7 +1292,7 @@ struct DropZoneView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 160)
+        .frame(height: 140)
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(isDragOver ? Color.purple : Color.gray.opacity(0.3), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, miterLimit: 10, dash: [6, 4], dashPhase: 0))
@@ -851,7 +1356,7 @@ struct FileInfoView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(14)
+        .padding(12)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
         .cornerRadius(12)
         .overlay(

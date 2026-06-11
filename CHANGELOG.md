@@ -4,6 +4,23 @@
 
 本项目遵循 [语义化版本控制 (SemVer)](https://semver.org/spec/v2.0.0.html) 规范。
 
+## [1.1.0] - 2026-06-11
+
+### Added
+- **本地 AI 净化助手**：集成了兼容 OpenAI 规范的本地 AI 文本校对优化功能（如 LM Studio 和 Ollama）。
+  - 支持 `GET /models` 获取本地服务已下载的可用大模型列表，并能够快速选择切换。
+  - 提供了自动与手动填入模型名称的双重防错输入设计。
+  - 内置了高精度 Few-shot 排版纠错提示词，告诉模型只需修正 OCR 笔误且不改变原文结构，并且强制使用 `【识别是：X，修改为：Y】` 大括号展示字词修改对比。
+- **UI 双栏与 Tab 对比**：右侧正文展示区重构为卡片 Tab 栏，支持在“原始提取文本”和“本地 AI 净化文本”之间无缝切换。
+  - 新增了 AI 推理状态展示与思考日志。
+  - 提供了 AI 净化文本的一键复制功能。
+- **HTTP 安全连接允许**：在 `Info.plist` 中追加 `NSAppTransportSecurity -> NSAllowsArbitraryLoads`，以确保能在沙盒或系统限制下与本地本地环回 HTTP API (Ollama/LM Studio) 进行畅通连接。
+
+### Security
+- 本地 AI 请求完全基于 localhost 进行，不经过任何外部公网代理，继续保障 PDF 文档的绝对私密。
+
+---
+
 ## [1.0.0] - 2026-06-11
 
 ### Added
