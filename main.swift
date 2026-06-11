@@ -48,6 +48,9 @@ class PDFExtractorEngine: ObservableObject {
     @Published var aiProgressStatus: String = ""
     @Published var aiResultText: String = ""
     
+    // 用以控制和中止当前 AI 推理任务的句柄
+    private var currentAITask: URLSessionDataTask?
+    
     // 模型列表响应结构
     struct AIModelResponse: Codable {
         let data: [AIModelData]
@@ -100,6 +103,9 @@ class PDFExtractorEngine: ObservableObject {
         // AI 状态清除
         self.aiResultText = ""
         self.aiProgressStatus = ""
+        
+        // 取消正在进行的任务
+        cancelAIProcessing()
     }
     
     /// 扫描 PDF 的前若干页，统计高频出现的疑似水印文字
@@ -373,7 +379,7 @@ class PDFExtractorEngine: ObservableObject {
         NSColor.white.set()
         rect.fill()
         
-        // 2. 缩放坐标系，以便直接用 PDFKit 原生坐标进行绘制
+        // 2. 缩放坐标系，以便直接用 PDFPage 自己的 bounds 绘图
         let transform = NSAffineTransform()
         transform.scale(by: scale)
         transform.concat()
@@ -449,13 +455,15 @@ class PDFExtractorEngine: ObservableObject {
         
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 4.0
+        request.timeoutInterval = 15.0 // 延长至 15 秒以允许本地 AI 服务启动或唤醒
         
         if !aiApiKey.isEmpty {
             request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
         }
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
             DispatchQueue.main.async {
                 self.isAIFetchingModels = false
             }
@@ -482,7 +490,7 @@ class PDFExtractorEngine: ObservableObject {
                     self.updateAIProgressStatus("✅ 成功拉取到 \(modelIds.count) 个本地模型")
                 }
             } catch {
-                // 部分本地 AI 接口没有 models 节点，或者是返回形式稍微不一样，尝试简单解析
+                // 尝试解析非标结构
                 if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
                    let dataArray = json["data"] as? [[String: Any]] {
                     let ids = dataArray.compactMap { $0["id"] as? String }
@@ -500,7 +508,7 @@ class PDFExtractorEngine: ObservableObject {
         }.resume()
     }
     
-    /// 发送文本至本地 AI 进行格式排版与字词净化
+    /// 发送文本至本地 AI 进行格式排版与字词净化（24小时超长超时，支持手动中止）
     func processTextWithAI(inputText: String, systemPrompt: String) {
         let cleanInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanInput.isEmpty {
@@ -513,13 +521,16 @@ class PDFExtractorEngine: ObservableObject {
             return
         }
         
+        // 如果有老任务未关闭，先取消
+        cancelAIProcessing()
+        
         isAIProcessing = true
-        updateAIProgressStatus("本地 AI 正在润色校对中，这可能需要较长时间...")
+        updateAIProgressStatus("本地 AI 正在推理润色，请耐心等待...")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 180.0 // 本地大模型推理可能很慢，设置 3 分钟超时
+        request.timeoutInterval = 86400.0 // 设定为 24 小时超长超时，使用户可以无限等待本地大模型生成
         
         if !aiApiKey.isEmpty {
             request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
@@ -545,12 +556,19 @@ class PDFExtractorEngine: ObservableObject {
             return
         }
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
             DispatchQueue.main.async {
                 self.isAIProcessing = false
+                self.currentAITask = nil
             }
             
-            if let error = error {
+            if let error = error as NSError? {
+                // 如果是用户主动取消任务，不报失败日志
+                if error.code == NSURLErrorCancelled {
+                    return
+                }
                 self.updateAIProgressStatus("❌ 请求失败: \(error.localizedDescription)")
                 return
             }
@@ -582,7 +600,21 @@ class PDFExtractorEngine: ObservableObject {
                 self.updateAIProgressStatus("❌ 解析回复内容 JSON 错误")
                 print("解析 AI 聊天失败: \(error)")
             }
-        }.resume()
+        }
+        
+        self.currentAITask = task
+        task.resume()
+    }
+    
+    /// 主动中止并取消当前正在运行的本地 AI 文本净化请求
+    func cancelAIProcessing() {
+        if let task = currentAITask {
+            task.cancel()
+            currentAITask = nil
+            isAIProcessing = false
+            updateAIProgressStatus("❌ 已主动取消 AI 优化净化流程")
+            logOutput += "\n[AI 提示] 用户主动取消了本地 AI 文本净化请求。\n"
+        }
     }
     
     private func updateAIProgressStatus(_ status: String) {
@@ -641,15 +673,15 @@ struct ContentView: View {
     @State private var isWatermarkExpanded = true
     @State private var isAIExpanded = true
     
-    // 高级 AI 优化提示词
+    // 高级 AI 优化与断行合并修复提示词
     @State private var systemPrompt = """
 你是一个极为严谨的文本排版与错别字纠正助手。你将接收一段由 OCR 引擎从扫描件中识别出的原始文本。
 请执行以下处理：
 1. 保持原文的主体结构和逻辑含义完全不变，切勿重写、扩写或精简正文内容。
 2. 修复文本中由于 OCR 识别误差导致的可能错字、别字（例如把“而且”识别为“面且”，把“我们”识别为“我门”）。
-3. 调整断行和标点符号，使排版符合正常的中文书写规范。
-4. 【核心铁律】：每当你在排版、字词上修改了任何内容，你必须在修改后的内容旁边，紧随其后附上大括号，格式为：“【识别是：[原始错误词]，修改为：[修改后词]】”。
-例如：如果原文是“面且我门要去公园”，纠正后应输出：“而且【识别是：面且，修改为：而且】我们【识别是：我门，修改为：我们】要去公园”。
+3. 智能修复不合理的强行换行与分段：OCR 识别出的每一行扫描文本经常有行尾生硬换行。你必须智能判断句意连贯性，对于本应是一个连贯句子的硬换行，应当将其合并拼接，并按照正常的自然段落进行排版，消除零碎的碎行和段落撕裂。
+4. 【核心铁律】：每当你在排版、硬换行、字词上修改了任何内容，你必须在修改后的内容旁边，紧随其后附上大括号，格式为：“【识别是：[原始错误/硬换行]，修改为：[修改后/合并内容]】”。
+例如：如果原文是“面且我门要\\n去公园”，纠正后应输出：“而且【识别是：面且，修改为：而且】我们【识别是：我门，修改为：我们】要去公园【识别是：要\\n去，修改为：要去】”。
 5. 只输出处理纠正后的最终文本，严禁夹带任何多余的开场白、解释、Markdown 标记或总结语！
 """
     
@@ -1169,12 +1201,13 @@ struct ContentView: View {
                         } else {
                             // AI Tab 内容
                             if engine.isAIProcessing {
-                                // AI 正在处理状态
-                                VStack(spacing: 20) {
+                                // AI 正在处理状态与主动取消按钮
+                                VStack(spacing: 24) {
                                     Spacer()
                                     ProgressView()
                                         .controlSize(.large)
-                                    VStack(spacing: 6) {
+                                    
+                                    VStack(spacing: 8) {
                                         Text("本地 AI 正在推理润色...")
                                             .font(.system(size: 14, weight: .semibold))
                                         Text(engine.aiProgressStatus)
@@ -1183,6 +1216,28 @@ struct ContentView: View {
                                             .multilineTextAlignment(.center)
                                             .padding(.horizontal, 40)
                                     }
+                                    
+                                    // 精致的主动取消按钮
+                                    Button(action: {
+                                        engine.cancelAIProcessing()
+                                    }) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "xmark.circle")
+                                            Text("取消优化")
+                                        }
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.red)
+                                        .padding(.vertical, 8)
+                                        .padding(.horizontal, 16)
+                                        .background(Color.red.opacity(0.1))
+                                        .cornerRadius(6)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    
                                     Spacer()
                                 }
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1209,7 +1264,7 @@ struct ContentView: View {
                                     Text("本地 AI 文本净化")
                                         .font(.system(size: 15, weight: .bold))
                                     
-                                    Text("本地 AI 可以智能修复 OCR 扫描产生的错别字，并调整段落排版。\n所有的修改都会使用【大括号对】标出，确保可读可查。")
+                                    Text("本地 AI 可以智能修复 OCR 扫描产生的错别字，并调整段落换行。\n所有的修改都会使用【大括号对】标出，确保可读可查。")
                                         .font(.system(size: 11.5))
                                         .foregroundColor(.secondary)
                                         .multilineTextAlignment(.center)
