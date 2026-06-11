@@ -4,6 +4,17 @@
 
 本项目遵循 [语义化版本控制 (SemVer)](https://semver.org/spec/v2.0.0.html) 规范。
 
+## [1.4.0] - 2026-06-11
+
+### Added
+- **水印后台计算与安全防护**：将 `analyzeWatermarks` 移动至 `DispatchQueue.global().async` 异步扫描，消除拖入 PDF 时的 UI 卡顿。引入 `isAnalyzingWatermarks` 状态与 UUID `currentLoadToken` 时序追踪机制，彻底规避了用户在分析中途快速切换、清空或强行提取所造成的 PDFKit 读写竞态与 `EXC_BAD_ACCESS` 崩溃风险。
+- **追加写盘安全加固与现代 API 升级**：优化每页提取后的自动写盘逻辑，弃用废弃 API 并改用现代 Swift 5 `seekToEnd()` 与 `write(contentsOf:)`。增加了完整的异常捕获与日志记录，即使文件在 Finder 中被意外删除，也能自动零异常重建，提升程序健壮性。
+- **SSE 流式数据传输乱码彻底解决**：重构了流式网络数据接收代理，引入了字节级 `streamBuffer` 数据缓冲机制，通过识别换行符切分完整行。100% 解决了 TCP 粘包/分包以及 UTF-8 多字节字符被网络分片切断导致的 LLM 优化输出丢字与乱码 Bug。
+- **URLSession 强引用循环内存泄露修复**：在 AI 推理结束（不论成功或中断）的代理方法中，显式调用 `invalidateAndCancel()` 销毁 Session。彻底切断了 `URLSession` 对代理对象（Engine Class）的永久强引用循环，确保内存资源在文件清空时能被正常回收。
+- **UI 交互防重入锁**：当水印后台扫描正在进行时，“开始提取文字”按钮会自动展现流光等待动效并进入 `.disabled` 物理防刷状态，杜绝由于多次快速点击引起的逻辑冲突。
+
+---
+
 ## [1.3.0] - 2026-06-11
 
 ### Added

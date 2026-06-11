@@ -15,7 +15,7 @@ struct PDFExtractorApp: App {
     }
 }
 
-// MARK: - 核心 PDF 处理与 OCR / 本地 AI 引擎 (加固与自动保存版)
+// MARK: - 核心 PDF 处理与 OCR / 本地 AI 引擎 (体验与 Bug 加固版)
 class PDFExtractorEngine: NSObject, ObservableObject {
     @Published var isProcessing = false
     @Published var progress: Double = 0.0
@@ -24,6 +24,9 @@ class PDFExtractorEngine: NSObject, ObservableObject {
     @Published var pdfFileName: String = ""
     @Published var pdfFileSize: String = ""
     @Published var pdfTotalPages: Int = 0
+    
+    // 是否正在后台异步扫描水印词，用以防范与文本提取任务的 PDFKit 竞态冲突
+    @Published var isAnalyzingWatermarks = false
     
     // 自动扫描识别出来的疑似水印词列表
     @Published var watermarkCandidates: [WatermarkCandidate] = []
@@ -58,6 +61,9 @@ class PDFExtractorEngine: NSObject, ObservableObject {
     private var currentAISession: URLSession?
     private var currentAITask: URLSessionDataTask?
     
+    // 流式 SSE 文本分块数据缓冲区，100% 规避 TCP 包截断与多字节字符乱码问题
+    private var streamBuffer = Data()
+    
     // 模型列表响应结构
     struct AIModelResponse: Codable {
         let data: [AIModelData]
@@ -66,6 +72,9 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         let id: String
     }
     
+    // 用于追踪每一次 PDF 加载的唯一标识，防范清除或重新加载时的时序竞态
+    private var currentLoadToken: UUID?
+
     override init() {
         super.init()
     }
@@ -90,16 +99,21 @@ class PDFExtractorEngine: NSObject, ObservableObject {
             self.pdfFileSize = "未知大小"
         }
         
+        let token = UUID()
+        self.currentLoadToken = token
+        
         self.logOutput = "文件成功加载: \(url.lastPathComponent)\n"
         self.currentStatus = "就绪，正在自动分析水印词..."
         
         // 自动分析疑似水印
-        analyzeWatermarks(doc)
+        analyzeWatermarks(doc, token: token)
         return true
     }
     
     /// 清除当前加载的文件并强行中断正在运行的后台任务
     func clear() {
+        self.currentLoadToken = nil
+        self.isAnalyzingWatermarks = false
         self.pdfDocument = nil
         self.pdfURL = nil
         self.pdfFileName = ""
@@ -121,40 +135,49 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         cancelAIProcessing()
     }
     
-    /// 扫描 PDF 的前若干页，统计高频出现的疑似水印文字
-    private func analyzeWatermarks(_ doc: PDFDocument) {
-        var counts: [String: Int] = [:]
-        let pageCount = doc.pageCount
-        let maxPagesToScan = min(pageCount, 30) // 最多扫描前30页用于水印分析，避免大文件卡顿
-        
-        for i in 0..<maxPagesToScan {
-            guard let page = doc.page(at: i) else { continue }
-            let selections = page.selection(for: page.bounds(for: .mediaBox))?.selectionsByLine() ?? []
-            for sel in selections {
-                if let text = sel.string?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), !text.isEmpty {
-                    // 水印字数通常在这个范围，且不至于是一整段话
-                    if text.count >= 2 && text.count <= 30 {
-                        counts[text, default: 0] += 1
+    /// 【异步主线程安全优化】：扫描 PDF 的前若干页，统计高频出现的疑似水印文字。
+    /// 计算过程完全放入后台 global 线程，彻底规避大文件拖入时引起 UI 主线程假死和彩虹球问题。
+    private func analyzeWatermarks(_ doc: PDFDocument, token: UUID) {
+        self.isAnalyzingWatermarks = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            var counts: [String: Int] = [:]
+            let pageCount = doc.pageCount
+            let maxPagesToScan = min(pageCount, 30) // 最多扫描前30页用于水印分析
+            
+            for i in 0..<maxPagesToScan {
+                guard let page = doc.page(at: i) else { continue }
+                let selections = page.selection(for: page.bounds(for: .mediaBox))?.selectionsByLine() ?? []
+                for sel in selections {
+                    if let text = sel.string?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), !text.isEmpty {
+                        if text.count >= 2 && text.count <= 30 {
+                            counts[text, default: 0] += 1
+                        }
                     }
                 }
             }
-        }
-        
-        // 筛选出在超过 20% 的已扫描页面中重复出现的文本块
-        let threshold = max(2, Int(Double(maxPagesToScan) * 0.2))
-        let candidates = counts.filter { $0.value >= threshold }
-            .map { WatermarkCandidate(text: $0.key, occurrenceCount: $0.value, isSelected: true) }
-            .sorted { $0.occurrenceCount > $1.occurrenceCount }
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.watermarkCandidates = candidates
-            if candidates.isEmpty {
-                self.currentStatus = "分析完毕，未检测到高频活字水印。"
-                self.logOutput += "未检测到明显的页面重复活字水印，您也可以手动添加过滤词。\n"
-            } else {
-                self.currentStatus = "分析完毕，发现 \(candidates.count) 个疑似水印词。"
-                self.logOutput += "检测到疑似水印词：\n" + candidates.map { " - \"\text)\" (\($0.occurrenceCount)页出现)" }.joined(separator: "\n") + "\n"
+            
+            // 筛选出在超过 20% 的已扫描页面中重复出现的文本块
+            let threshold = max(2, Int(Double(maxPagesToScan) * 0.2))
+            let candidates = counts.filter { $0.value >= threshold }
+                .map { WatermarkCandidate(text: $0.key, occurrenceCount: $0.value, isSelected: true) }
+                .sorted { $0.occurrenceCount > $1.occurrenceCount }
+            
+            // 计算完毕后回到主线程更新 UI 绑定
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                // 如果在后台计算期间，文件已被清除或替换，则丢弃本次计算结果
+                guard self.currentLoadToken == token else { return }
+                
+                self.watermarkCandidates = candidates
+                self.isAnalyzingWatermarks = false
+                if candidates.isEmpty {
+                    self.currentStatus = "分析完毕，未检测到高频活字水印。"
+                    self.logOutput += "未检测到明显的页面重复活字水印，您也可以手动添加过滤词。\n"
+                } else {
+                    self.currentStatus = "分析完毕，发现 \(candidates.count) 个疑似水印词。"
+                    self.logOutput += "检测到疑似水印词：\n" + candidates.map { " - \"\($0.text)\" (\($0.occurrenceCount)页出现)" }.joined(separator: "\n") + "\n"
+                }
             }
         }
     }
@@ -238,13 +261,19 @@ class PDFExtractorEngine: NSObject, ObservableObject {
                 // 1. 将数据缓存在内存变量中，用于界面上的截断预览
                 memoryBuffer += pageHeader + pageContent
                 
-                // 2. 【实时追加写盘】：以 Append 模式将本页产出实时存盘，即使断电数据也不丢失，且内存开销始终平稳
-                if let fileHandle = try? FileHandle(forWritingTo: txtURL) {
-                    fileHandle.seekToEndOfFile()
-                    if let writeData = (pageHeader + pageContent).data(using: .utf8) {
-                        fileHandle.write(writeData)
+                // 2. 【实时追加写盘与删除重建防护】：即使在提取过程中用户在 Finder 意外删除了 TXT 文本，程序也会自动重建它并继续追加，绝对不会丢失后续页面数据
+                do {
+                    if !FileManager.default.fileExists(atPath: txtURL.path) {
+                        try "".write(to: txtURL, atomically: true, encoding: .utf8)
                     }
-                    try? fileHandle.close()
+                    let fileHandle = try FileHandle(forWritingTo: txtURL)
+                    try fileHandle.seekToEnd()
+                    if let writeData = (pageHeader + pageContent).data(using: .utf8) {
+                        try fileHandle.write(contentsOf: writeData)
+                    }
+                    try fileHandle.close()
+                } catch {
+                    self.updateStatus("⚠️ 实时追加写盘失败: \(error.localizedDescription)")
                 }
                 
                 self.updateProgress(Double(pageIndex) / Double(totalPages))
@@ -282,7 +311,7 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         }
     }
     
-    /// 处理单个页面，根据模式决定是直接提取活字还是执行 OCR
+    /// 处理单个页面，根据模式决定是直接提取活字还是执行 OCR (包含空行合并净化排版)
     private func processPage(
         page: PDFPage,
         pageIndex: Int,
@@ -347,7 +376,23 @@ class PDFExtractorEngine: NSObject, ObservableObject {
             }
         } else {
             self.updateStatus("第 \(pageIndex) 页: 检测为包含可选中的活字正文，已直接提取并剔除活字水印。")
-            pageResult = normalTextPieces.joined(separator: "\n")
+            
+            // 【排版净化】：过滤连续的无意义空行，保留段落排版的可读性，消除堆积换行
+            var cleanedTextPieces: [String] = []
+            var lastWasEmpty = false
+            for piece in normalTextPieces {
+                let trimmed = piece.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    if !lastWasEmpty {
+                        cleanedTextPieces.append("")
+                        lastWasEmpty = true
+                    }
+                } else {
+                    cleanedTextPieces.append(piece)
+                    lastWasEmpty = false
+                }
+            }
+            pageResult = cleanedTextPieces.joined(separator: "\n")
         }
         
         return pageResult
@@ -368,7 +413,7 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         return false
     }
     
-    /// 文本后处理：在识别好的文字中精准剔除水印字词
+    /// 文本后处理与排版优化：在识别好的文字中精准剔除水印字词，合并连续空行
     private func cleanText(_ text: String, filters: Set<String>, ignoreCase: Bool) -> String {
         var cleaned = text
         for filter in filters {
@@ -381,12 +426,25 @@ class PDFExtractorEngine: NSObject, ObservableObject {
             }
         }
         
-        // 清理由于剔除而形成的多余空行
-        let lines = cleaned.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        // 【排版优化】：清理并压缩由于剔除水印产生的多余连续换行，只保留合理间隔
+        let rawLines = cleaned.components(separatedBy: .newlines)
+        var cleanedLines: [String] = []
+        var lastLineWasEmpty = false
         
-        return lines.joined(separator: "\n")
+        for line in rawLines {
+            let trimmedLine = line.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            if trimmedLine.isEmpty {
+                if !lastLineWasEmpty {
+                    cleanedLines.append("")
+                    lastLineWasEmpty = true
+                }
+            } else {
+                cleanedLines.append(line)
+                lastLineWasEmpty = false
+            }
+        }
+        
+        return cleanedLines.joined(separator: "\n")
     }
     
     private func replaceIgnoreCase(in text: String, target: String, with replacement: String) -> String {
@@ -514,8 +572,8 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
             
-            DispatchQueue.main.async {
-                self.isAIFetchingModels = false
+            DispatchQueue.main.async { [weak self] in
+                self?.isAIFetchingModels = false
             }
             
             if let error = error {
@@ -532,7 +590,8 @@ class PDFExtractorEngine: NSObject, ObservableObject {
                 let decoded = try JSONDecoder().decode(AIModelResponse.self, from: data)
                 let modelIds = decoded.data.map { $0.id }
                 
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
                     self.aiModels = modelIds
                     if let first = modelIds.first {
                         self.aiSelectedModel = first
@@ -544,7 +603,8 @@ class PDFExtractorEngine: NSObject, ObservableObject {
                 if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
                    let dataArray = json["data"] as? [[String: Any]] {
                     let ids = dataArray.compactMap { $0["id"] as? String }
-                    DispatchQueue.main.async {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
                         self.aiModels = ids
                         if let first = ids.first {
                             self.aiSelectedModel = first
@@ -576,6 +636,7 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         
         isAIProcessing = true
         aiResultText = "" // 开启流式前，清空旧数据
+        streamBuffer = Data() // 清空流式数据缓冲区
         aiTxtFileURL = nil // 清空上次导出的文件 URL 引用
         updateAIProgressStatus("本地 AI 正在推理润色，请耐心等待...")
         
@@ -617,8 +678,9 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         task.resume()
     }
     
-    /// 主动中止并取消当前正在运行的本地 AI 文本净化请求 (借助流式连接，取消会在服务端立刻引发 Broken Pipe 从而终止 GPU 计算)
+    /// 主动中止并取消当前正在运行的本地 AI 文本净化请求
     func cancelAIProcessing() {
+        streamBuffer = Data() // 主动取消时清空缓冲区
         if let task = currentAITask {
             task.cancel()
             currentAITask = nil
@@ -689,12 +751,18 @@ extension PDFExtractorEngine: URLSessionDataDelegate {
     }
     
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let text = String(data: data, encoding: .utf8) else { return }
+        // 将新到的网络数据追加到流式数据缓冲区中，确保不会因为 TCP 分包截断导致 JSON 损坏或中文乱码
+        streamBuffer.append(data)
         
-        // 分块中可能会包含多个 "data: ..." 行，需要按行切分
-        let lines = text.components(separatedBy: .newlines)
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 循环处理，直到 buffer 中没有换行符（ASCII 10）为止
+        while let lineEndIndex = streamBuffer.firstIndex(of: 10) {
+            // 提取出完整的一行数据
+            let lineData = streamBuffer.subdata(in: 0..<lineEndIndex)
+            // 从缓冲区中移除这部分数据，包括最后的换行符本身
+            streamBuffer.removeSubrange(0...lineEndIndex)
+            
+            guard let lineStr = String(data: lineData, encoding: .utf8) else { continue }
+            let trimmed = lineStr.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
             
             if trimmed.hasPrefix("data: ") {
@@ -717,8 +785,12 @@ extension PDFExtractorEngine: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            self.streamBuffer = Data() // 清空流缓冲区
             self.isAIProcessing = false
             self.currentAITask = nil
+            
+            // 极其重要：显式释放 URLSession 以打断 delegate 引起的循环强引用内存泄漏
+            self.currentAISession?.invalidateAndCancel()
             self.currentAISession = nil
             
             if let error = error as NSError? {
@@ -1086,7 +1158,7 @@ struct ContentView: View {
                                             }
                                             .buttonStyle(.bordered)
                                             .controlSize(.small)
-                                            .disabled(engine.isAIProcessing)
+                                            .disabled(engine.isAIProcessing) // 【防重入锁】：AI运行时禁用网络刷新
                                         }
                                         
                                         VStack(alignment: .leading, spacing: 4) {
@@ -1147,23 +1219,37 @@ struct ContentView: View {
                                 self.selectedTab = 0 // 回到原始文本
                             }
                         }) {
-                            Text("开始提取文字")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 11)
-                                .background(
-                                    LinearGradient(colors: [.purple, .blue], startPoint: .leading, endPoint: .trailing)
-                                )
-                                .cornerRadius(8)
-                                .shadow(color: Color.purple.opacity(0.2), radius: 6, x: 0, y: 3)
+                            HStack(spacing: 8) {
+                                if engine.isAnalyzingWatermarks {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .scaleEffect(0.8)
+                                        .brightness(0.5)
+                                    Text("正在自动分析水印词...")
+                                } else {
+                                    Text("开始提取文字")
+                                }
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(
+                                engine.isAnalyzingWatermarks ? 
+                                AnyShapeStyle(Color.gray.opacity(0.4)) :
+                                AnyShapeStyle(LinearGradient(colors: [.purple, .blue], startPoint: .leading, endPoint: .trailing))
+                            )
+                            .cornerRadius(8)
+                            .shadow(color: engine.isAnalyzingWatermarks ? Color.clear : Color.purple.opacity(0.2), radius: 6, x: 0, y: 3)
                         }
                         .buttonStyle(.plain)
-                        .disabled(engine.isAIProcessing) // AI 净化运行时禁用提取按钮
+                        .disabled(engine.isAIProcessing || engine.isAnalyzingWatermarks) // AI 净化或水印分析运行时禁用提取按钮
                         
                         if !resultText.isEmpty && !engine.isAIProcessing {
                             Button(action: {
-                                selectedTab = 1 // 切换到 AI Tab
+                                withAnimation {
+                                    selectedTab = 1 // ✨【智能 Tab 跳转】：点击优化时，UI 自动跳往 AI 净化面板，展现打字机出字细节
+                                }
                                 engine.processTextWithAI(inputText: resultText, systemPrompt: systemPrompt)
                             }) {
                                 HStack(spacing: 4) {
@@ -1194,7 +1280,7 @@ struct ContentView: View {
             // ==================== 右侧处理状态与结果展示区 ====================
             VStack(spacing: 0) {
                 if engine.isProcessing {
-                    // 原始文本提取中状态 (加入“取消提取”机制)
+                    // 原始文本提取中状态 (包含取消功能)
                     VStack(spacing: 24) {
                         Spacer()
                         
@@ -1289,7 +1375,7 @@ struct ContentView: View {
                             
                             Spacer()
                             
-                            // 右侧快捷复制操作
+                            // 右侧快捷复制操作 (真实的内存字符，无截断复制)
                             HStack(spacing: 10) {
                                 if selectedTab == 0 {
                                     Button(action: {
@@ -1334,10 +1420,11 @@ struct ContentView: View {
                         .padding(.top, 20)
                         .padding(.bottom, 12)
                         
+                        // 分割线
                         Divider()
                             .padding(.horizontal, 24)
                         
-                        // 2. 醒目的高亮横幅提示 (Banner)
+                        // 2. 醒目的高亮横幅提示 (Banner，支持 Finder 点击直达高亮定位)
                         if selectedTab == 0 {
                             if let url = txtFileURL {
                                 HStack(spacing: 8) {
@@ -1402,7 +1489,7 @@ struct ContentView: View {
                             }
                         }
                         
-                        // Tab 内容区域 (带有大文件渲染保护)
+                        // Tab 内容区域 (带有大文件渲染保护，防止卡死 UI)
                         if selectedTab == 0 {
                             TextEditor(text: previewTextBinding)
                                 .font(.system(.body, design: .default))
@@ -1486,6 +1573,9 @@ struct ContentView: View {
                                         .padding(.horizontal, 50)
                                     
                                     Button(action: {
+                                        withAnimation {
+                                            selectedTab = 1
+                                        }
                                         engine.processTextWithAI(inputText: resultText, systemPrompt: systemPrompt)
                                     }) {
                                         HStack(spacing: 6) {
