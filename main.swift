@@ -64,6 +64,19 @@ class PDFExtractorEngine: NSObject, ObservableObject {
     // 流式 SSE 文本分块数据缓冲区，100% 规避 TCP 包截断与多字节字符乱码问题
     private var streamBuffer = Data()
     
+    // === 本地 AI 串行分片推理专用状态 ===
+    @Published var aiTotalChunks: Int = 0       // 本次任务总分片数
+    @Published var aiCurrentChunkIndex: Int = 0 // 当前正在推理的分片索引 (0-indexed)
+    private var pendingAIChunks: [String] = []  // 待推理分片缓存队列
+    private var aiCompletedText: String = ""    // 已完成的所有分片的累积结果
+    private var aiLastCompletedChunkText: String = "" // 上一个刚完成分片的流式文本缓冲，用以增量追加写盘
+    
+    // 用于追踪文字提取任务唯一性的 Token，防范残留线程写盘污染
+    private var currentExtractToken: UUID?
+    
+    // 用于在异步网络代理回调中发起下一分片请求时备用的系统提示词
+    private var systemPromptBackup: String = ""
+    
     // 模型列表响应结构
     struct AIModelResponse: Codable {
         let data: [AIModelData]
@@ -194,6 +207,9 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         guard let doc = pdfDocument, let url = pdfURL else { return }
         guard !isProcessing else { return } // 防重入保护
         
+        let token = UUID()
+        self.currentExtractToken = token
+        
         isProcessing = true
         isCancelled = false
         progress = 0.0
@@ -223,11 +239,18 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
+            guard let tokenCheck = self.currentExtractToken else { return }
             let totalPages = doc.pageCount
             var memoryBuffer = ""
             
             for i in 0..<totalPages {
                 let pageIndex = i + 1
+                
+                // 【时序与防污染校验点】：检查任务是否依然是当前执行的最新的那个提取任务
+                guard self.currentExtractToken == tokenCheck else {
+                    print("[提取提示] 检测到新任务或已清除，旧后台线程已安全退出。")
+                    return
+                }
                 
                 // 【提取中止拦截点】：在处理每一页前先核实用户是否点击了“取消”
                 if self.isCancelled {
@@ -241,25 +264,33 @@ class PDFExtractorEngine: NSObject, ObservableObject {
                 
                 self.updateStatus("正在处理第 \(pageIndex) / \(totalPages) 页...")
                 
-                guard let page = doc.page(at: i) else {
-                    self.updateProgress(Double(pageIndex) / Double(totalPages))
-                    continue
-                }
+                var pageText = ""
                 
-                let pageText = self.processPage(
-                    page: page,
-                    pageIndex: pageIndex,
-                    watermarkFilters: allWatermarkFilters,
-                    ignoreCase: ignoreCase,
-                    mode: mode,
-                    eraseImageWatermark: eraseImageWatermark
-                )
+                // 【OCR 大图内存堆积加固】：使用 autoreleasepool 块强制每页处理完即刻销毁图片资产，规避长文档 OOM 闪退
+                autoreleasepool {
+                    guard let page = doc.page(at: i) else {
+                        self.updateProgress(Double(pageIndex) / Double(totalPages))
+                        return
+                    }
+                    
+                    pageText = self.processPage(
+                        page: page,
+                        pageIndex: pageIndex,
+                        watermarkFilters: allWatermarkFilters,
+                        ignoreCase: ignoreCase,
+                        mode: mode,
+                        eraseImageWatermark: eraseImageWatermark
+                    )
+                }
                 
                 let pageHeader = "\n[第 \(pageIndex) 页]\n"
                 let pageContent = pageText + "\n"
                 
                 // 1. 将数据缓存在内存变量中，用于界面上的截断预览
                 memoryBuffer += pageHeader + pageContent
+                
+                // 【时序与防污染校验点】：在写入磁盘前再次校验，以彻底斩断对新文件的写入污染
+                guard self.currentExtractToken == tokenCheck else { return }
                 
                 // 2. 【实时追加写盘与删除重建防护】：即使在提取过程中用户在 Finder 意外删除了 TXT 文本，程序也会自动重建它并继续追加，绝对不会丢失后续页面数据
                 do {
@@ -278,6 +309,9 @@ class PDFExtractorEngine: NSObject, ObservableObject {
                 
                 self.updateProgress(Double(pageIndex) / Double(totalPages))
             }
+            
+            // 【时序与防污染校验点】：确认无错完美结束时，如果 token 一致，才触发 UI 的 completion 回调
+            guard self.currentExtractToken == tokenCheck else { return }
             
             self.updateStatus("🎉 处理完成！结果已自动保存。")
             DispatchQueue.main.async {
@@ -618,7 +652,78 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         }.resume()
     }
     
-    /// 发送文本至本地 AI 进行格式排版与字词净化（24小时超长超时，开启流式，并支持客户端主动中断以释放 GPU）
+    /// 【退避断句切分算法】：将长文本按最大字符长度进行智能分段，优先保证句子和段落语义完整，预留保命物理硬切底线。
+    func splitTextIntoChunks(_ text: String, maxChars: Int = 1800) -> [String] {
+        var chunks: [String] = []
+        var remainingText = text
+        
+        while !remainingText.isEmpty {
+            if remainingText.count <= maxChars {
+                chunks.append(remainingText)
+                break
+            }
+            
+            // 截取当前安全范围内的窗口
+            let subrange = remainingText.prefix(maxChars)
+            
+            // 尝试在 1400 ~ maxChars 之间找切分标点，保证不会产生过小的碎片分片
+            let searchMinIndex = max(1000, maxChars - 400)
+            let searchArea = String(subrange.suffix(maxChars - searchMinIndex))
+            
+            var cutOffset = -1
+            
+            // 1. 第一级退避：优先寻找段落换行进行切分
+            if let lastNewLineIndex = searchArea.lastIndex(of: "\n") {
+                cutOffset = searchMinIndex + searchArea.distance(from: searchArea.startIndex, to: lastNewLineIndex)
+            } 
+            // 2. 第二级退避：如果没换行，寻找句末标点符号
+            else {
+                let punctuation: [Character] = ["。", "！", "？", "；", ".", "!", "?", ";"]
+                var latestPunctIndex: String.Index? = nil
+                for char in punctuation {
+                    if let index = searchArea.lastIndex(of: char) {
+                        if latestPunctIndex == nil || index > latestPunctIndex! {
+                            latestPunctIndex = index
+                        }
+                    }
+                }
+                
+                if let idx = latestPunctIndex {
+                    cutOffset = searchMinIndex + searchArea.distance(from: searchArea.startIndex, to: idx) + 1
+                }
+                // 3. 第三级退避：找逗号等中顿标点
+                else {
+                    let minorPunct: [Character] = ["，", "、", ","]
+                    var latestMinorIndex: String.Index? = nil
+                    for char in minorPunct {
+                        if let index = searchArea.lastIndex(of: char) {
+                            if latestMinorIndex == nil || index > latestMinorIndex! {
+                                latestMinorIndex = index
+                            }
+                        }
+                    }
+                    if let idx = latestMinorIndex {
+                        cutOffset = searchMinIndex + searchArea.distance(from: searchArea.startIndex, to: idx) + 1
+                    }
+                }
+            }
+            
+            // 4. 第四级退避：完全无标点极品情况，触发硬切保命
+            if cutOffset == -1 {
+                cutOffset = maxChars
+            }
+            
+            let cutIndex = remainingText.index(remainingText.startIndex, offsetBy: cutOffset)
+            let chunk = String(remainingText[..<cutIndex])
+            chunks.append(chunk)
+            
+            remainingText = String(remainingText[cutIndex...])
+        }
+        
+        return chunks
+    }
+    
+    /// 发送文本至本地 AI 进行格式排版与字词净化（24小时超长超时，支持无限文本的分片串行推理与接力回显）
     func processTextWithAI(inputText: String, systemPrompt: String) {
         let cleanInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanInput.isEmpty {
@@ -626,50 +731,91 @@ class PDFExtractorEngine: NSObject, ObservableObject {
             return
         }
         
-        guard let url = URL(string: aiApiBaseUrl + "/chat/completions") else {
-            self.updateAIProgressStatus("❌ 无效的 API 服务地址")
-            return
-        }
-        
         // 强行关闭历史遗留任务，确保通道不发生叠加竞态
         cancelAIProcessing()
         
         isAIProcessing = true
-        aiResultText = "" // 开启流式前，清空旧数据
-        streamBuffer = Data() // 清空流式数据缓冲区
-        aiTxtFileURL = nil // 清空上次导出的文件 URL 引用
-        updateAIProgressStatus("本地 AI 正在推理润色，请耐心等待...")
+        aiResultText = ""
+        aiCompletedText = ""
+        aiLastCompletedChunkText = ""
+        streamBuffer = Data()
+        aiTxtFileURL = nil
+        
+        // 备份系统提示词供后续分片使用
+        self.systemPromptBackup = systemPrompt
+        
+        // 1. 启动智能文本分片
+        let chunks = splitTextIntoChunks(cleanInput, maxChars: 1800)
+        self.pendingAIChunks = chunks
+        self.aiTotalChunks = chunks.count
+        self.aiCurrentChunkIndex = 0
+        
+        logOutput += "\n=== 启动本地 AI 文本净化 (分片队列) ===\n"
+        logOutput += "长文本已成功智能切分为 \(chunks.count) 个安全分段。\n"
+        
+        // 2. 发起第一段串行推理
+        processNextChunk(systemPrompt: systemPrompt)
+    }
+    
+    /// 执行串行推理队列中的下一个分片任务
+    private func processNextChunk(systemPrompt: String) {
+        guard isAIProcessing else { return }
+        
+        // 1. 如果队列为空，说明已经全部接力润色完毕，进行收尾落盘
+        if pendingAIChunks.isEmpty {
+            self.updateAIProgressStatus("🎉 本地 AI 净化校对完成！已自动导出文件。")
+            saveAIResultToDisk()
+            DispatchQueue.main.async { [weak self] in
+                self?.isAIProcessing = false
+            }
+            return
+        }
+        
+        guard let url = URL(string: aiApiBaseUrl + "/chat/completions") else {
+            self.updateAIProgressStatus("❌ 无效的 API 服务地址")
+            self.isAIProcessing = false
+            return
+        }
+        
+        // 2. 弹出头部分片并更新索引
+        let chunkText = pendingAIChunks.removeFirst()
+        self.aiLastCompletedChunkText = "" // 清空上一段的缓冲
+        
+        updateAIProgressStatus("本地 AI 正在推理第 \(aiCurrentChunkIndex + 1) / \(aiTotalChunks) 段...")
+        logOutput += "[AI 推理] 开始处理第 \(aiCurrentChunkIndex + 1) 段，长度 \(chunkText.count) 字...\n"
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 86400.0 // 设定为 24 小时超长超时，使用户可以无限等待本地大模型生成
+        request.timeoutInterval = 86400.0 // 24小时超长超时保护
         
         if !aiApiKey.isEmpty {
             request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
         }
         
+        // 调整系统提示词，严厉警告不要输出废话，以实现无缝流式拼接
+        let strictSystemPrompt = systemPrompt + "\n【极其重要】：此输入是整篇长文本中的一小段。为了实现多段无缝拼接，您只需直接输出这一段净化排版后的纯正文内容，严禁夹带任何引导语、翻译说明、‘这是第X段’、Markdown 声明或总结性废话！直接输出本段处理后的文字！"
+        
         let messages: [[String: String]] = [
-            ["role": "system", "content": systemPrompt],
-            ["role": "user", "content": cleanInput]
+            ["role": "system", "content": strictSystemPrompt],
+            ["role": "user", "content": chunkText]
         ]
         
         let requestBody: [String: Any] = [
             "model": aiSelectedModel.isEmpty ? "default" : aiSelectedModel,
             "messages": messages,
-            "temperature": 0.1, // 低温度以保证极高字词还原度和纠错规范
-            "stream": true // 开启流式传输！
+            "temperature": 0.1,
+            "stream": true
         ]
         
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
         } catch {
-            self.updateAIProgressStatus("❌ 序列化请求失败")
+            self.updateAIProgressStatus("❌ 序列化请求数据失败")
             self.isAIProcessing = false
             return
         }
         
-        // 创建一个单独的 URLSession，指定自己为 delegate 以便接收流式 SSE 分块数据
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         let task = session.dataTask(with: request)
         
@@ -681,6 +827,8 @@ class PDFExtractorEngine: NSObject, ObservableObject {
     /// 主动中止并取消当前正在运行的本地 AI 文本净化请求
     func cancelAIProcessing() {
         streamBuffer = Data() // 主动取消时清空缓冲区
+        pendingAIChunks.removeAll() // 【防逃逸加固】：清空整个分片队列，防止自动发起下一段
+        
         if let task = currentAITask {
             task.cancel()
             currentAITask = nil
@@ -735,6 +883,45 @@ class PDFExtractorEngine: NSObject, ObservableObject {
             logOutput += "\n[AI 警告] 自动导出净化文件失败: \(error.localizedDescription)\n"
         }
     }
+    
+    /// 【分片流式写盘】：在每个分片完成时，增量追加写入本地 [原名]_AI净化.txt 磁盘文件中
+    private func appendAIResultChunkToDisk(chunkContent: String) {
+        guard let url = pdfURL, !chunkContent.isEmpty else { return }
+        
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let aiTxtURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("txt")
+        
+        do {
+            // 如果是第一分片，先清空或初始化文件，避免多次运行重复叠加
+            if aiCurrentChunkIndex == 0 {
+                try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
+            }
+            
+            // 检查文件被删自动重建
+            if !FileManager.default.fileExists(atPath: aiTxtURL.path) {
+                try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
+            }
+            
+            let fileHandle = try FileHandle(forWritingTo: aiTxtURL)
+            try fileHandle.seekToEnd()
+            
+            // 为了段落美观，分片之间补一个换行
+            let appendDataStr = chunkContent + "\n"
+            if let writeData = appendDataStr.data(using: .utf8) {
+                try fileHandle.write(contentsOf: writeData)
+            }
+            try fileHandle.close()
+            
+            logOutput += "[AI 存盘] 第 \(aiCurrentChunkIndex + 1) 段已成功写入磁盘 \(aiTxtURL.lastPathComponent)。\n"
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.aiTxtFileURL = aiTxtURL
+            }
+        } catch {
+            logOutput += "\n[AI 警告] 分片磁盘追加失败: \(error.localizedDescription)\n"
+        }
+    }
 }
 
 // MARK: - URLSessionDataDelegate 实现 (流式文本接收与按行分流解析)
@@ -774,8 +961,10 @@ extension PDFExtractorEngine: URLSessionDataDelegate {
                 if let content = parseDeltaContent(from: jsonPart) {
                     DispatchQueue.main.async { [weak self] in
                         guard let self = self else { return }
-                        // 实时流式追加内容，打字机回显！
-                        self.aiResultText += content
+                        // 1. 将当前 Token 累加到本分段的流式文本缓冲中
+                        self.aiLastCompletedChunkText += content
+                        // 2. 将最终的全文显示文本（已完成分段 + 当前吐字）更新到 UI
+                        self.aiResultText = self.aiCompletedText + self.aiLastCompletedChunkText
                     }
                 }
             }
@@ -786,7 +975,6 @@ extension PDFExtractorEngine: URLSessionDataDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.streamBuffer = Data() // 清空流缓冲区
-            self.isAIProcessing = false
             self.currentAITask = nil
             
             // 极其重要：显式释放 URLSession 以打断 delegate 引起的循环强引用内存泄漏
@@ -799,9 +987,18 @@ extension PDFExtractorEngine: URLSessionDataDelegate {
                     return
                 }
                 self.updateAIProgressStatus("❌ 优化生成中断: \(error.localizedDescription)")
+                self.isAIProcessing = false
             } else {
-                // 【自动保存机制】：AI 推理无错完美结束时，自动将其导出到本地
-                self.saveAIResultToDisk()
+                // 当前分片成功结束：
+                // 1. 将当前分段的流式累加值追加进 completed 缓存
+                self.aiCompletedText += self.aiLastCompletedChunkText + "\n"
+                
+                // 2. 流式追加落盘：将这一段最新内容立刻写入本地硬盘的 _AI净化.txt 文件
+                self.appendAIResultChunkToDisk(chunkContent: self.aiLastCompletedChunkText)
+                
+                // 3. 准备执行下一个分片
+                self.aiCurrentChunkIndex += 1
+                self.processNextChunk(systemPrompt: self.systemPromptBackup)
             }
         }
     }
@@ -884,9 +1081,7 @@ struct ContentView: View {
                 }
                 return resultText
             },
-            set: { newValue in
-                resultText = newValue
-            }
+            set: { _ in }
         )
     }
     
@@ -898,9 +1093,7 @@ struct ContentView: View {
                 }
                 return engine.aiResultText
             },
-            set: { newValue in
-                engine.aiResultText = newValue
-            }
+            set: { _ in }
         )
     }
     
