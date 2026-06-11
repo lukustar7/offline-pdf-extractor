@@ -15,7 +15,7 @@ struct PDFExtractorApp: App {
     }
 }
 
-// MARK: - 核心 PDF 处理与 OCR / 本地 AI 引擎 (加固版)
+// MARK: - 核心 PDF 处理与 OCR / 本地 AI 引擎 (加固与自动保存版)
 class PDFExtractorEngine: NSObject, ObservableObject {
     @Published var isProcessing = false
     @Published var progress: Double = 0.0
@@ -50,6 +50,9 @@ class PDFExtractorEngine: NSObject, ObservableObject {
     @Published var isAIProcessing = false
     @Published var aiProgressStatus: String = ""
     @Published var aiResultText: String = ""
+    
+    // AI 自动保存的 TXT 文件路径
+    @Published var aiTxtFileURL: URL?
     
     // 用以控制和主动中止当前流式 AI 推理任务的 Session 与 Task 句柄
     private var currentAISession: URLSession?
@@ -111,6 +114,7 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         // AI 状态清除
         self.aiResultText = ""
         self.aiProgressStatus = ""
+        self.aiTxtFileURL = nil
         
         // 取消正在进行的任务
         cancelPDFExtraction()
@@ -150,7 +154,7 @@ class PDFExtractorEngine: NSObject, ObservableObject {
                 self.logOutput += "未检测到明显的页面重复活字水印，您也可以手动添加过滤词。\n"
             } else {
                 self.currentStatus = "分析完毕，发现 \(candidates.count) 个疑似水印词。"
-                self.logOutput += "检测到疑似水印词：\n" + candidates.map { " - \"\($0.text)\" (\($0.occurrenceCount)页出现)" }.joined(separator: "\n") + "\n"
+                self.logOutput += "检测到疑似水印词：\n" + candidates.map { " - \"\text)\" (\($0.occurrenceCount)页出现)" }.joined(separator: "\n") + "\n"
             }
         }
     }
@@ -246,7 +250,7 @@ class PDFExtractorEngine: NSObject, ObservableObject {
                 self.updateProgress(Double(pageIndex) / Double(totalPages))
             }
             
-            self.updateStatus("🎉 处理完成！结果已成功保存到: \(txtURL.lastPathComponent)")
+            self.updateStatus("🎉 处理完成！结果已自动保存。")
             DispatchQueue.main.async {
                 self.isProcessing = false
                 completion(memoryBuffer, txtURL)
@@ -572,6 +576,7 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         
         isAIProcessing = true
         aiResultText = "" // 开启流式前，清空旧数据
+        aiTxtFileURL = nil // 清空上次导出的文件 URL 引用
         updateAIProgressStatus("本地 AI 正在推理润色，请耐心等待...")
         
         var request = URLRequest(url: url)
@@ -646,6 +651,28 @@ class PDFExtractorEngine: NSObject, ObservableObject {
         }
         return content
     }
+    
+    /// 【AI 净化文本自动保存】：将 AI 纠错净化完成后的文本自动写入本地同级目录下的 [原名]_AI净化.txt 文件
+    private func saveAIResultToDisk() {
+        guard let url = pdfURL, !aiResultText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let aiTxtURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("txt")
+        
+        do {
+            try aiResultText.write(to: aiTxtURL, atomically: true, encoding: .utf8)
+            self.updateAIProgressStatus("✅ 本地 AI 净化校对完成！已自动导出文件。")
+            logOutput += "\n[AI 提示] 净化文本已成功自动保存至: \(aiTxtURL.lastPathComponent)\n"
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.aiTxtFileURL = aiTxtURL
+            }
+        } catch {
+            self.updateAIProgressStatus("❌ 本地 AI 净化已完成，但自动写入硬盘失败: \(error.localizedDescription)")
+            logOutput += "\n[AI 警告] 自动导出净化文件失败: \(error.localizedDescription)\n"
+        }
+    }
 }
 
 // MARK: - URLSessionDataDelegate 实现 (流式文本接收与按行分流解析)
@@ -701,7 +728,8 @@ extension PDFExtractorEngine: URLSessionDataDelegate {
                 }
                 self.updateAIProgressStatus("❌ 优化生成中断: \(error.localizedDescription)")
             } else {
-                self.updateAIProgressStatus("✅ 本地 AI 净化校对完成！")
+                // 【自动保存机制】：AI 推理无错完美结束时，自动将其导出到本地
+                self.saveAIResultToDisk()
             }
         }
     }
@@ -794,7 +822,7 @@ struct ContentView: View {
         Binding(
             get: {
                 if engine.aiResultText.count > 15000 {
-                    return String(engine.aiResultText.prefix(15000)) + "\n\n【⚠️ 性能保护提示：AI 生成结果过长（当前共 \(engine.aiResultText.count) 字），预览区已自动截断前 15,000 字以防渲染卡死。完整纠错文本依然在流式传输接收中。】"
+                    return String(engine.aiResultText.prefix(15000)) + "\n\n【⚠️ 性能保护提示：AI 生成结果过长（当前共 \(engine.aiResultText.count) 字），预览区已自动截断前 15,000 字以防渲染卡死。完整净化文本已安全写入本地。】"
                 }
                 return engine.aiResultText
             },
@@ -1166,7 +1194,7 @@ struct ContentView: View {
             // ==================== 右侧处理状态与结果展示区 ====================
             VStack(spacing: 0) {
                 if engine.isProcessing {
-                    // 原始文本提取中状态 (加入“取消提取”机制，保障用户可以随时中断超长处理)
+                    // 原始文本提取中状态 (加入“取消提取”机制)
                     VStack(spacing: 24) {
                         Spacer()
                         
@@ -1224,7 +1252,7 @@ struct ContentView: View {
                 } else if !resultText.isEmpty {
                     // 重构的文本展示卡片区，双栏 Tab 视图
                     VStack(alignment: .leading, spacing: 0) {
-                        // 顶部自定义精美 TabBar
+                        // 1. 顶部自定义精美 TabBar 栏
                         HStack {
                             HStack(spacing: 4) {
                                 Button(action: { selectedTab = 0 }) {
@@ -1261,10 +1289,9 @@ struct ContentView: View {
                             
                             Spacer()
                             
-                            // 右侧动作操作
+                            // 右侧快捷复制操作
                             HStack(spacing: 10) {
                                 if selectedTab == 0 {
-                                    // 原始文本复制 (复制全部真实的内存数据，不受 UI 截断渲染的影响)
                                     Button(action: {
                                         let pasteboard = NSPasteboard.general
                                         pasteboard.clearContents()
@@ -1281,25 +1308,7 @@ struct ContentView: View {
                                         .cornerRadius(6)
                                     }
                                     .buttonStyle(.plain)
-                                    
-                                    if let url = txtFileURL {
-                                        Button(action: {
-                                            NSWorkspace.shared.activateFileViewerSelecting([url])
-                                        }) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "folder")
-                                                Text("在 Finder 中显示")
-                                            }
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .background(Color.purple.opacity(0.1))
-                                            .foregroundColor(.purple)
-                                            .cornerRadius(6)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
                                 } else {
-                                    // AI 文本复制 (复制全部真实的 AI 字符，包含打字机累加结果)
                                     if !engine.aiResultText.isEmpty {
                                         Button(action: {
                                             let pasteboard = NSPasteboard.general
@@ -1328,7 +1337,72 @@ struct ContentView: View {
                         Divider()
                             .padding(.horizontal, 24)
                         
-                        // Tab 内容区域 (绑定带有截断保护的 Binding 实例，完美保护大文件渲染性能)
+                        // 2. 醒目的高亮横幅提示 (Banner)
+                        if selectedTab == 0 {
+                            if let url = txtFileURL {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                        .font(.system(size: 13, weight: .bold))
+                                    Text("🎉 文字提取已完成！已自动导出原始文本至: ")
+                                        .font(.system(size: 11.5))
+                                        .foregroundColor(.primary)
+                                    Text(url.lastPathComponent)
+                                        .font(.system(size: 11.5, weight: .bold))
+                                        .foregroundColor(.green)
+                                        .underline()
+                                        .onTapGesture {
+                                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                                        }
+                                        .help("点击在 Finder 中定位该文件")
+                                    Spacer()
+                                }
+                                .padding(.vertical, 9)
+                                .padding(.horizontal, 14)
+                                .background(Color.green.opacity(0.1))
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.green.opacity(0.25), lineWidth: 1)
+                                )
+                                .padding(.horizontal, 24)
+                                .padding(.top, 14)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
+                        } else {
+                            if let url = engine.aiTxtFileURL {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "sparkles")
+                                        .foregroundColor(.purple)
+                                        .font(.system(size: 13, weight: .bold))
+                                    Text("✨ AI 优化已完成！已自动导出净化文本至: ")
+                                        .font(.system(size: 11.5))
+                                        .foregroundColor(.primary)
+                                    Text(url.lastPathComponent)
+                                        .font(.system(size: 11.5, weight: .bold))
+                                        .foregroundColor(.purple)
+                                        .underline()
+                                        .onTapGesture {
+                                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                                        }
+                                        .help("点击在 Finder 中定位该文件")
+                                    Spacer()
+                                }
+                                .padding(.vertical, 9)
+                                .padding(.horizontal, 14)
+                                .background(Color.purple.opacity(0.1))
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.purple.opacity(0.25), lineWidth: 1)
+                                )
+                                .padding(.horizontal, 24)
+                                .padding(.top, 14)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
+                        }
+                        
+                        // Tab 内容区域 (带有大文件渲染保护)
                         if selectedTab == 0 {
                             TextEditor(text: previewTextBinding)
                                 .font(.system(.body, design: .default))
@@ -1342,7 +1416,6 @@ struct ContentView: View {
                         } else {
                             // AI Tab 内容
                             if engine.isAIProcessing {
-                                // AI 正在处理状态与主动取消按钮 (大模型推理取消)
                                 VStack(spacing: 24) {
                                     Spacer()
                                     ProgressView()
@@ -1358,7 +1431,7 @@ struct ContentView: View {
                                             .padding(.horizontal, 40)
                                     }
                                     
-                                    // 精致的取消按钮，点击时可在服务端引发 Broken Pipe 自动断开生成，强力护航本地资源
+                                    // 精致的取消按钮
                                     Button(action: {
                                         engine.cancelAIProcessing()
                                     }) {
