@@ -793,8 +793,8 @@ class PDFExtractorEngine: NSObject, ObservableObject {
             request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
         }
         
-        // 调整系统提示词，严厉警告不要输出废话，以实现无缝流式拼接
-        let strictSystemPrompt = systemPrompt + "\n【极其重要】：此输入是整篇长文本中的一小段。为了实现多段无缝拼接，您只需直接输出这一段净化排版后的纯正文内容，严禁夹带任何引导语、翻译说明、‘这是第X段’、Markdown 声明或总结性废话！直接输出本段处理后的文字！"
+        // 调整系统提示词，严厉警告不要输出废话，以实现无缝流式拼接，并严厉警告必须保留段落
+        let strictSystemPrompt = systemPrompt + "\n【极其重要】：此输入是整篇长文本中的一小段。为了实现多段无缝拼接，您只需直接输出这一段净化排版后的纯正文内容，严禁夹带任何引导语、总结性废话。同时，您必须严格保留原本存在的自然段落结构与所有换行，切勿将它们强行合并或压缩为一大段！直接输出本段处理后的文字！"
         
         let messages: [[String: String]] = [
             ["role": "system", "content": strictSystemPrompt],
@@ -905,8 +905,8 @@ class PDFExtractorEngine: NSObject, ObservableObject {
             let fileHandle = try FileHandle(forWritingTo: aiTxtURL)
             try fileHandle.seekToEnd()
             
-            // 为了段落美观，分片之间补一个换行
-            let appendDataStr = chunkContent + "\n"
+            // 为了段落美观，分片之间以双换行进行强力隔离
+            let appendDataStr = chunkContent + "\n\n"
             if let writeData = appendDataStr.data(using: .utf8) {
                 try fileHandle.write(contentsOf: writeData)
             }
@@ -952,20 +952,23 @@ extension PDFExtractorEngine: URLSessionDataDelegate {
             let trimmed = lineStr.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
             
+            // 兼容性清洗：去除 data: 前缀（若有），并支持无前缀的纯 JSON 流
+            var jsonPart = trimmed
             if trimmed.hasPrefix("data: ") {
-                let jsonPart = trimmed.dropFirst(6).trimmingCharacters(in: .whitespacesAndNewlines)
-                if jsonPart == "[DONE]" {
-                    continue
-                }
-                
-                if let content = parseDeltaContent(from: jsonPart) {
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        // 1. 将当前 Token 累加到本分段的流式文本缓冲中
-                        self.aiLastCompletedChunkText += content
-                        // 2. 将最终的全文显示文本（已完成分段 + 当前吐字）更新到 UI
-                        self.aiResultText = self.aiCompletedText + self.aiLastCompletedChunkText
-                    }
+                jsonPart = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            
+            if jsonPart == "[DONE]" {
+                continue
+            }
+            
+            if let content = parseDeltaContent(from: jsonPart) {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    // 1. 将当前 Token 累加到本分段的流式文本缓冲中
+                    self.aiLastCompletedChunkText += content
+                    // 2. 将最终的全文显示文本（已完成分段 + 当前吐字）更新到 UI
+                    self.aiResultText = self.aiCompletedText + self.aiLastCompletedChunkText
                 }
             }
         }
@@ -990,8 +993,8 @@ extension PDFExtractorEngine: URLSessionDataDelegate {
                 self.isAIProcessing = false
             } else {
                 // 当前分片成功结束：
-                // 1. 将当前分段的流式累加值追加进 completed 缓存
-                self.aiCompletedText += self.aiLastCompletedChunkText + "\n"
+                // 1. 将当前分段的流式累加值追加进 completed 缓存 (使用双换行符隔离，还原自然大段)
+                self.aiCompletedText += self.aiLastCompletedChunkText + "\n\n"
                 
                 // 2. 流式追加落盘：将这一段最新内容立刻写入本地硬盘的 _AI净化.txt 文件
                 self.appendAIResultChunkToDisk(chunkContent: self.aiLastCompletedChunkText)
@@ -1057,9 +1060,9 @@ struct ContentView: View {
     @State private var systemPrompt = """
 你是一个极为严谨的文本排版与错别字纠正助手。你将接收一段由 OCR 引擎从扫描件中识别出的原始文本。
 请执行以下处理：
-1. 保持原文的主体结构和逻辑含义完全不变，切勿重写、扩写或精简正文内容。
+1. 保持原文的主体段落结构和逻辑含义完全不变，切勿重写、扩写或精简正文内容。
 2. 修复文本中由于 OCR 识别误差导致的可能错字、别字（例如把“而且”识别为“面且”，把“我们”识别为“我门”）。
-3. 智能修复不合理的强行换行与分段：OCR 识别出的每一行扫描文本经常有行尾生硬换行。你必须智能判断句意连贯性，对于本应是一个连贯句子的硬换行，应当将其合并拼接，并按照正常的自然段落进行排版，消除零碎的碎行和段落撕裂。
+3. 智能修复不合理的强行换行：只智能合并由于 OCR 扫描在行尾造成的生硬硬断行（本应是一句话但断开了）。【核心铁律】：严禁将原本属于不同自然段、有空行分隔或语义独立的换行强行合并为一行。必须严格保留原文中所有的自然段落结构！
 4. 【核心铁律】：每当你在排版、硬换行、字词上修改了任何内容，你必须在修改后的内容旁边，紧随其后附上大括号，格式为：“【识别是：[原始错误/硬换行]，修改为：[修改后/合并内容]】”。
 例如：如果原文是“面且我门要\\n去公园”，纠正后应输出：“而且【识别是：面且，修改为：而且】我们【识别是：我门，修改为：我们】要去公园【识别是：要\\n去，修改为：要去】”。
 5. 只输出处理纠正后的最终文本，严禁夹带任何多余的开场白、解释、Markdown 标记或总结语！
@@ -1694,15 +1697,65 @@ struct ContentView: View {
                                 .padding(.horizontal, 24)
                                 .padding(.vertical, 20)
                         } else {
-                            // AI Tab 内容
-                            if engine.isAIProcessing {
+                            // AI Tab 内容区域 (流式无遮挡与进度指示优化版)
+                            if !engine.aiResultText.isEmpty {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    // 如果仍在推理中，在顶部展示极其精致的紫色流光分段进度横幅
+                                    if engine.isAIProcessing {
+                                        HStack(spacing: 8) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                                .scaleEffect(0.7)
+                                            
+                                            Text("⚡️ AI 正在接力流式净化中：第 \(engine.aiCurrentChunkIndex + 1) / \(engine.aiTotalChunks) 段 (前 \(engine.aiCurrentChunkIndex) 段已成功存盘，共 \(engine.aiResultText.count) 字)...")
+                                                .font(.system(size: 11.5, weight: .medium))
+                                                .foregroundColor(.purple)
+                                            
+                                            Spacer()
+                                            
+                                            Button(action: {
+                                                engine.cancelAIProcessing()
+                                            }) {
+                                                Text("取消优化")
+                                                    .font(.system(size: 11, weight: .bold))
+                                                    .foregroundColor(.red)
+                                                    .underline()
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                        .padding(.vertical, 9)
+                                        .padding(.horizontal, 14)
+                                        .background(Color.purple.opacity(0.1))
+                                        .cornerRadius(8)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(Color.purple.opacity(0.25), lineWidth: 1)
+                                        )
+                                        .padding(.horizontal, 24)
+                                        .padding(.top, 14)
+                                        .transition(.opacity)
+                                    }
+                                    
+                                    // 实时打字机回显编辑器 (已设为只读以防止误编辑截断)
+                                    TextEditor(text: aiPreviewTextBinding)
+                                        .font(.system(.body, design: .default))
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 8)
+                                        .background(Color(nsColor: .textBackgroundColor))
+                                        .cornerRadius(8)
+                                        .shadow(color: Color.black.opacity(0.02), radius: 5, x: 0, y: 2)
+                                        .padding(.horizontal, 24)
+                                        .padding(.vertical, 20)
+                                }
+                            } else if engine.isAIProcessing {
+                                // 热身期（还没吐字但正在处理时，显示等待卡片）
                                 VStack(spacing: 24) {
                                     Spacer()
                                     ProgressView()
                                         .controlSize(.large)
                                     
                                     VStack(spacing: 8) {
-                                        Text("本地 AI 正在推理润色...")
+                                        Text("正在连接本地模型并初始化首段...")
                                             .font(.system(size: 14, weight: .semibold))
                                         Text(engine.aiProgressStatus)
                                             .font(.system(size: 11))
@@ -1711,7 +1764,6 @@ struct ContentView: View {
                                             .padding(.horizontal, 40)
                                     }
                                     
-                                    // 精致的取消按钮
                                     Button(action: {
                                         engine.cancelAIProcessing()
                                     }) {
@@ -1735,17 +1787,6 @@ struct ContentView: View {
                                     Spacer()
                                 }
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            } else if !engine.aiResultText.isEmpty {
-                                // 展示 AI 纠错净化文本
-                                TextEditor(text: aiPreviewTextBinding)
-                                    .font(.system(.body, design: .default))
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 8)
-                                    .background(Color(nsColor: .textBackgroundColor))
-                                    .cornerRadius(8)
-                                    .shadow(color: Color.black.opacity(0.02), radius: 5, x: 0, y: 2)
-                                    .padding(.horizontal, 24)
-                                    .padding(.vertical, 20)
                             } else {
                                 // AI 未开始的空白引导状态
                                 VStack(spacing: 16) {
