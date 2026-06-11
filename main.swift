@@ -15,8 +15,8 @@ struct PDFExtractorApp: App {
     }
 }
 
-// MARK: - 核心 PDF 处理与 OCR / 本地 AI 引擎
-class PDFExtractorEngine: ObservableObject {
+// MARK: - 核心 PDF 处理与 OCR / 本地 AI 引擎 (加固版)
+class PDFExtractorEngine: NSObject, ObservableObject {
     @Published var isProcessing = false
     @Published var progress: Double = 0.0
     @Published var currentStatus: String = "未加载文件"
@@ -38,6 +38,9 @@ class PDFExtractorEngine: ObservableObject {
     private var pdfDocument: PDFDocument?
     private var pdfURL: URL?
     
+    // 中止 PDF 提取信号
+    @Published var isCancelled = false
+    
     // === 本地 AI 净化模块状态 ===
     @Published var aiApiBaseUrl: String = "http://localhost:11434/v1" // 默认 Ollama API 地址
     @Published var aiApiKey: String = ""
@@ -48,7 +51,8 @@ class PDFExtractorEngine: ObservableObject {
     @Published var aiProgressStatus: String = ""
     @Published var aiResultText: String = ""
     
-    // 用以控制和中止当前 AI 推理任务的句柄
+    // 用以控制和主动中止当前流式 AI 推理任务的 Session 与 Task 句柄
+    private var currentAISession: URLSession?
     private var currentAITask: URLSessionDataTask?
     
     // 模型列表响应结构
@@ -57,6 +61,10 @@ class PDFExtractorEngine: ObservableObject {
     }
     struct AIModelData: Codable {
         let id: String
+    }
+    
+    override init() {
+        super.init()
     }
     
     /// 加载 PDF 文件并对其进行初始化扫描
@@ -87,7 +95,7 @@ class PDFExtractorEngine: ObservableObject {
         return true
     }
     
-    /// 清除当前加载的文件
+    /// 清除当前加载的文件并强行中断正在运行的后台任务
     func clear() {
         self.pdfDocument = nil
         self.pdfURL = nil
@@ -105,6 +113,7 @@ class PDFExtractorEngine: ObservableObject {
         self.aiProgressStatus = ""
         
         // 取消正在进行的任务
+        cancelPDFExtraction()
         cancelAIProcessing()
     }
     
@@ -133,7 +142,8 @@ class PDFExtractorEngine: ObservableObject {
             .map { WatermarkCandidate(text: $0.key, occurrenceCount: $0.value, isSelected: true) }
             .sorted { $0.occurrenceCount > $1.occurrenceCount }
         
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.watermarkCandidates = candidates
             if candidates.isEmpty {
                 self.currentStatus = "分析完毕，未检测到高频活字水印。"
@@ -145,7 +155,7 @@ class PDFExtractorEngine: ObservableObject {
         }
     }
     
-    /// 执行文字提取与去水印任务
+    /// 执行文字提取与去水印任务 (包含实时写盘加固和中止拦截)
     func extractText(
         activeWatermarks: Set<String>,
         customWatermarks: String,
@@ -155,8 +165,10 @@ class PDFExtractorEngine: ObservableObject {
         completion: @escaping (String, URL?) -> Void
     ) {
         guard let doc = pdfDocument, let url = pdfURL else { return }
+        guard !isProcessing else { return } // 防重入保护
         
         isProcessing = true
+        isCancelled = false
         progress = 0.0
         currentStatus = "准备开始处理..."
         logOutput += "\n=== 开始执行文字提取与去水印 ===\n"
@@ -172,12 +184,34 @@ class PDFExtractorEngine: ObservableObject {
         logOutput += "模式: \(mode.rawValue)\n"
         logOutput += "图像擦除水印: \(eraseImageWatermark ? "开启" : "关闭")\n"
         
-        DispatchQueue.global(qos: .userInitiated).async {
+        // 目标存盘路径 (与 PDF 所在文件夹同名同路径下的 .txt 文件)
+        let txtURL = url.deletingPathExtension().appendingPathExtension("txt")
+        
+        // 【崩溃保护】：在提取开始前，清空旧的 TXT 文件，防止重复提取时内容叠加
+        do {
+            try "".write(to: txtURL, atomically: true, encoding: .utf8)
+        } catch {
+            logOutput += "⚠️ 警告：初始化本地写盘文件失败 \(error.localizedDescription)\n"
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
             let totalPages = doc.pageCount
-            var finalResult = ""
+            var memoryBuffer = ""
             
             for i in 0..<totalPages {
                 let pageIndex = i + 1
+                
+                // 【提取中止拦截点】：在处理每一页前先核实用户是否点击了“取消”
+                if self.isCancelled {
+                    self.updateStatus("❌ 处理被用户中止。已提取的数据已安全存在本地。")
+                    DispatchQueue.main.async {
+                        self.isProcessing = false
+                        completion(memoryBuffer, txtURL)
+                    }
+                    return
+                }
+                
                 self.updateStatus("正在处理第 \(pageIndex) / \(totalPages) 页...")
                 
                 guard let page = doc.page(at: i) else {
@@ -194,40 +228,52 @@ class PDFExtractorEngine: ObservableObject {
                     eraseImageWatermark: eraseImageWatermark
                 )
                 
-                finalResult += "\n[第 \(pageIndex) 页]\n"
-                finalResult += pageText + "\n"
+                let pageHeader = "\n[第 \(pageIndex) 页]\n"
+                let pageContent = pageText + "\n"
+                
+                // 1. 将数据缓存在内存变量中，用于界面上的截断预览
+                memoryBuffer += pageHeader + pageContent
+                
+                // 2. 【实时追加写盘】：以 Append 模式将本页产出实时存盘，即使断电数据也不丢失，且内存开销始终平稳
+                if let fileHandle = try? FileHandle(forWritingTo: txtURL) {
+                    fileHandle.seekToEndOfFile()
+                    if let writeData = (pageHeader + pageContent).data(using: .utf8) {
+                        fileHandle.write(writeData)
+                    }
+                    try? fileHandle.close()
+                }
                 
                 self.updateProgress(Double(pageIndex) / Double(totalPages))
             }
             
-            // 写入本地同名 TXT 文件
-            let txtURL = url.deletingPathExtension().appendingPathExtension("txt")
-            do {
-                try finalResult.write(to: txtURL, atomically: true, encoding: .utf8)
-                self.updateStatus("🎉 处理完成！结果已成功保存到: \(txtURL.lastPathComponent)")
-                DispatchQueue.main.async {
-                    self.isProcessing = false
-                    completion(finalResult, txtURL)
-                }
-            } catch {
-                self.updateStatus("❌ 保存文件失败: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    self.isProcessing = false
-                    completion(finalResult, nil)
-                }
+            self.updateStatus("🎉 处理完成！结果已成功保存到: \(txtURL.lastPathComponent)")
+            DispatchQueue.main.async {
+                self.isProcessing = false
+                completion(memoryBuffer, txtURL)
             }
         }
     }
     
+    /// 主动中止当前的文字提取线程
+    func cancelPDFExtraction() {
+        if isProcessing {
+            isCancelled = true
+            currentStatus = "正在强行中止任务..."
+            logOutput += "\n[提取提示] 正在接收用户中止提取的指令...\n"
+        }
+    }
+    
     private func updateStatus(_ status: String) {
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.currentStatus = status
             self.logOutput += status + "\n"
         }
     }
     
     private func updateProgress(_ val: Double) {
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.progress = val
         }
     }
@@ -508,7 +554,7 @@ class PDFExtractorEngine: ObservableObject {
         }.resume()
     }
     
-    /// 发送文本至本地 AI 进行格式排版与字词净化（24小时超长超时，支持手动中止）
+    /// 发送文本至本地 AI 进行格式排版与字词净化（24小时超长超时，开启流式，并支持客户端主动中断以释放 GPU）
     func processTextWithAI(inputText: String, systemPrompt: String) {
         let cleanInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanInput.isEmpty {
@@ -521,10 +567,11 @@ class PDFExtractorEngine: ObservableObject {
             return
         }
         
-        // 如果有老任务未关闭，先取消
+        // 强行关闭历史遗留任务，确保通道不发生叠加竞态
         cancelAIProcessing()
         
         isAIProcessing = true
+        aiResultText = "" // 开启流式前，清空旧数据
         updateAIProgressStatus("本地 AI 正在推理润色，请耐心等待...")
         
         var request = URLRequest(url: url)
@@ -545,7 +592,7 @@ class PDFExtractorEngine: ObservableObject {
             "model": aiSelectedModel.isEmpty ? "default" : aiSelectedModel,
             "messages": messages,
             "temperature": 0.1, // 低温度以保证极高字词还原度和纠错规范
-            "stream": false
+            "stream": true // 开启流式传输！
         ]
         
         do {
@@ -556,70 +603,106 @@ class PDFExtractorEngine: ObservableObject {
             return
         }
         
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { return }
-            
-            DispatchQueue.main.async {
-                self.isAIProcessing = false
-                self.currentAITask = nil
-            }
-            
-            if let error = error as NSError? {
-                // 如果是用户主动取消任务，不报失败日志
-                if error.code == NSURLErrorCancelled {
-                    return
-                }
-                self.updateAIProgressStatus("❌ 请求失败: \(error.localizedDescription)")
-                return
-            }
-            
-            guard let data = data else {
-                self.updateAIProgressStatus("❌ 未收到 AI 端回复")
-                return
-            }
-            
-            do {
-                if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
-                    if let choices = json["choices"] as? [[String: Any]],
-                       let first = choices.first,
-                       let message = first["message"] as? [String: Any],
-                       let content = message["content"] as? String {
-                        
-                        DispatchQueue.main.async {
-                            self.aiResultText = content
-                            self.updateAIProgressStatus("✅ 本地 AI 净化校对完成！")
-                        }
-                    } else if let errorObj = json["error"] as? [String: Any],
-                              let msg = errorObj["message"] as? String {
-                        self.updateAIProgressStatus("❌ AI 服务端返回错误: \(msg)")
-                    } else {
-                        self.updateAIProgressStatus("❌ 无法解析回复 JSON 结构（未兼容 OpenAI）")
-                    }
-                }
-            } catch {
-                self.updateAIProgressStatus("❌ 解析回复内容 JSON 错误")
-                print("解析 AI 聊天失败: \(error)")
-            }
-        }
+        // 创建一个单独的 URLSession，指定自己为 delegate 以便接收流式 SSE 分块数据
+        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        let task = session.dataTask(with: request)
         
+        self.currentAISession = session
         self.currentAITask = task
         task.resume()
     }
     
-    /// 主动中止并取消当前正在运行的本地 AI 文本净化请求
+    /// 主动中止并取消当前正在运行的本地 AI 文本净化请求 (借助流式连接，取消会在服务端立刻引发 Broken Pipe 从而终止 GPU 计算)
     func cancelAIProcessing() {
         if let task = currentAITask {
             task.cancel()
             currentAITask = nil
+            
+            currentAISession?.invalidateAndCancel()
+            currentAISession = nil
+            
             isAIProcessing = false
-            updateAIProgressStatus("❌ 已主动取消 AI 优化净化流程")
+            updateAIProgressStatus("❌ 已主动取消 AI 优化净化流程。")
             logOutput += "\n[AI 提示] 用户主动取消了本地 AI 文本净化请求。\n"
         }
     }
     
     private func updateAIProgressStatus(_ status: String) {
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.aiProgressStatus = status
+        }
+    }
+    
+    // 解析流式 Delta 返回值
+    private func parseDeltaContent(from jsonStr: String) -> String? {
+        guard let data = jsonStr.data(using: .utf8) else { return nil }
+        guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let first = choices.first,
+              let delta = first["delta"] as? [String: Any],
+              let content = delta["content"] as? String else {
+            return nil
+        }
+        return content
+    }
+}
+
+// MARK: - URLSessionDataDelegate 实现 (流式文本接收与按行分流解析)
+extension PDFExtractorEngine: URLSessionDataDelegate {
+    
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        // 允许接收后续流数据包
+        completionHandler(.allow)
+    }
+    
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard let text = String(data: data, encoding: .utf8) else { return }
+        
+        // 分块中可能会包含多个 "data: ..." 行，需要按行切分
+        let lines = text.components(separatedBy: .newlines)
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+            
+            if trimmed.hasPrefix("data: ") {
+                let jsonPart = trimmed.dropFirst(6).trimmingCharacters(in: .whitespacesAndNewlines)
+                if jsonPart == "[DONE]" {
+                    continue
+                }
+                
+                if let content = parseDeltaContent(from: jsonPart) {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        // 实时流式追加内容，打字机回显！
+                        self.aiResultText += content
+                    }
+                }
+            }
+        }
+    }
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.isAIProcessing = false
+            self.currentAITask = nil
+            self.currentAISession = nil
+            
+            if let error = error as NSError? {
+                if error.code == NSURLErrorCancelled {
+                    // 主动取消，由于之前已经设置过状态，直接 return
+                    return
+                }
+                self.updateAIProgressStatus("❌ 优化生成中断: \(error.localizedDescription)")
+            } else {
+                self.updateAIProgressStatus("✅ 本地 AI 净化校对完成！")
+            }
         }
     }
 }
@@ -691,6 +774,35 @@ struct ContentView: View {
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
+    
+    // 【UI 性能卡死保护】：通过计算绑定限制在 TextEditor 内渲染的最大字数。真实的超长原始数据依然保存在变量中不受影响，复制和存盘均正常。
+    private var previewTextBinding: Binding<String> {
+        Binding(
+            get: {
+                if resultText.count > 15000 {
+                    return String(resultText.prefix(15000)) + "\n\n【⚠️ 性能保护提示：文本总长度较大（当前共 \(resultText.count) 字），预览区已为您自动截断并展示前 15,000 字，以确保系统流畅。完整文本内容已自动安全保存在本地 TXT 文件夹内。】"
+                }
+                return resultText
+            },
+            set: { newValue in
+                resultText = newValue
+            }
+        )
+    }
+    
+    private var aiPreviewTextBinding: Binding<String> {
+        Binding(
+            get: {
+                if engine.aiResultText.count > 15000 {
+                    return String(engine.aiResultText.prefix(15000)) + "\n\n【⚠️ 性能保护提示：AI 生成结果过长（当前共 \(engine.aiResultText.count) 字），预览区已自动截断前 15,000 字以防渲染卡死。完整纠错文本依然在流式传输接收中。】"
+                }
+                return engine.aiResultText
+            },
+            set: { newValue in
+                engine.aiResultText = newValue
+            }
+        )
+    }
     
     var body: some View {
         HStack(spacing: 0) {
@@ -888,6 +1000,7 @@ struct ContentView: View {
                                                 .foregroundColor(.secondary)
                                             TextField("http://localhost:11434/v1", text: $engine.aiApiBaseUrl)
                                                 .textFieldStyle(.roundedBorder)
+                                                .disabled(engine.isAIProcessing) // 推理中禁用输入，防刷
                                             
                                             HStack(spacing: 8) {
                                                 Button("Ollama") {
@@ -895,12 +1008,14 @@ struct ContentView: View {
                                                 }
                                                 .buttonStyle(.bordered)
                                                 .controlSize(.small)
+                                                .disabled(engine.isAIProcessing)
                                                 
                                                 Button("LM Studio") {
                                                     engine.aiApiBaseUrl = "http://localhost:1234/v1"
                                                 }
                                                 .buttonStyle(.bordered)
                                                 .controlSize(.small)
+                                                .disabled(engine.isAIProcessing)
                                             }
                                         }
                                         
@@ -920,6 +1035,7 @@ struct ContentView: View {
                                             if engine.aiModels.isEmpty {
                                                 TextField("请输入模型 (如 qwen2.5-7b-instruct)", text: $engine.aiSelectedModel)
                                                     .textFieldStyle(.roundedBorder)
+                                                    .disabled(engine.isAIProcessing)
                                             } else {
                                                 Picker("选择模型", selection: $engine.aiSelectedModel) {
                                                     ForEach(engine.aiModels, id: \.self) { model in
@@ -928,6 +1044,7 @@ struct ContentView: View {
                                                 }
                                                 .pickerStyle(.menu)
                                                 .labelsHidden()
+                                                .disabled(engine.isAIProcessing)
                                             }
                                             
                                             Button(action: {
@@ -941,6 +1058,7 @@ struct ContentView: View {
                                             }
                                             .buttonStyle(.bordered)
                                             .controlSize(.small)
+                                            .disabled(engine.isAIProcessing)
                                         }
                                         
                                         VStack(alignment: .leading, spacing: 4) {
@@ -957,6 +1075,7 @@ struct ContentView: View {
                                                     RoundedRectangle(cornerRadius: 6)
                                                         .stroke(Color.gray.opacity(0.15), lineWidth: 1)
                                                 )
+                                                .disabled(engine.isAIProcessing)
                                         }
                                         
                                         if !engine.aiProgressStatus.isEmpty {
@@ -983,7 +1102,7 @@ struct ContentView: View {
                 
                 Spacer()
                 
-                // 底部开始按钮
+                // 底部开始与净化操作大按钮 (包含重入防双击保护 .disabled)
                 if !engine.pdfFileName.isEmpty && !engine.isProcessing {
                     VStack(spacing: 8) {
                         Button(action: {
@@ -1012,6 +1131,7 @@ struct ContentView: View {
                                 .shadow(color: Color.purple.opacity(0.2), radius: 6, x: 0, y: 3)
                         }
                         .buttonStyle(.plain)
+                        .disabled(engine.isAIProcessing) // AI 净化运行时禁用提取按钮
                         
                         if !resultText.isEmpty && !engine.isAIProcessing {
                             Button(action: {
@@ -1046,7 +1166,7 @@ struct ContentView: View {
             // ==================== 右侧处理状态与结果展示区 ====================
             VStack(spacing: 0) {
                 if engine.isProcessing {
-                    // 原始文本提取中状态
+                    // 原始文本提取中状态 (加入“取消提取”机制，保障用户可以随时中断超长处理)
                     VStack(spacing: 24) {
                         Spacer()
                         
@@ -1062,6 +1182,27 @@ struct ContentView: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(.secondary)
                         }
+                        
+                        // 中止提取按钮
+                        Button(action: {
+                            engine.cancelPDFExtraction()
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "stop.circle")
+                                Text("取消提取")
+                            }
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.red)
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 16)
+                            .background(Color.red.opacity(0.1))
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
                         
                         // 动态运行日志输出
                         ScrollView {
@@ -1123,7 +1264,7 @@ struct ContentView: View {
                             // 右侧动作操作
                             HStack(spacing: 10) {
                                 if selectedTab == 0 {
-                                    // 原始文本复制
+                                    // 原始文本复制 (复制全部真实的内存数据，不受 UI 截断渲染的影响)
                                     Button(action: {
                                         let pasteboard = NSPasteboard.general
                                         pasteboard.clearContents()
@@ -1158,7 +1299,7 @@ struct ContentView: View {
                                         .buttonStyle(.plain)
                                     }
                                 } else {
-                                    // AI 文本复制
+                                    // AI 文本复制 (复制全部真实的 AI 字符，包含打字机累加结果)
                                     if !engine.aiResultText.isEmpty {
                                         Button(action: {
                                             let pasteboard = NSPasteboard.general
@@ -1187,9 +1328,9 @@ struct ContentView: View {
                         Divider()
                             .padding(.horizontal, 24)
                         
-                        // Tab 内容区域
+                        // Tab 内容区域 (绑定带有截断保护的 Binding 实例，完美保护大文件渲染性能)
                         if selectedTab == 0 {
-                            TextEditor(text: $resultText)
+                            TextEditor(text: previewTextBinding)
                                 .font(.system(.body, design: .default))
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 8)
@@ -1201,7 +1342,7 @@ struct ContentView: View {
                         } else {
                             // AI Tab 内容
                             if engine.isAIProcessing {
-                                // AI 正在处理状态与主动取消按钮
+                                // AI 正在处理状态与主动取消按钮 (大模型推理取消)
                                 VStack(spacing: 24) {
                                     Spacer()
                                     ProgressView()
@@ -1217,7 +1358,7 @@ struct ContentView: View {
                                             .padding(.horizontal, 40)
                                     }
                                     
-                                    // 精致的主动取消按钮
+                                    // 精致的取消按钮，点击时可在服务端引发 Broken Pipe 自动断开生成，强力护航本地资源
                                     Button(action: {
                                         engine.cancelAIProcessing()
                                     }) {
@@ -1243,7 +1384,7 @@ struct ContentView: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                             } else if !engine.aiResultText.isEmpty {
                                 // 展示 AI 纠错净化文本
-                                TextEditor(text: $engine.aiResultText)
+                                TextEditor(text: aiPreviewTextBinding)
                                     .font(.system(.body, design: .default))
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 8)
@@ -1264,7 +1405,7 @@ struct ContentView: View {
                                     Text("本地 AI 文本净化")
                                         .font(.system(size: 15, weight: .bold))
                                     
-                                    Text("本地 AI 可以智能修复 OCR 扫描产生的错别字，并调整段落换行。\n所有的修改都会使用【大括号对】标出，确保可读可查。")
+                                    Text("本地 AI 可以智能修复 OCR 扫描产生的错别字，并合并因为换行生硬造成的生硬断行。\n所有的修改都会使用【大括号对】标出，确保可读可查。")
                                         .font(.system(size: 11.5))
                                         .foregroundColor(.secondary)
                                         .multilineTextAlignment(.center)
