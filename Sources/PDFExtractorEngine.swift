@@ -230,7 +230,7 @@ class PDFExtractorEngine: ObservableObject {
         mode: ExtractionMode,
         eraseImageWatermark: Bool,
         pageRangeString: String,
-        completion: @escaping (String, URL?, Double) -> Void // 增加单页平均耗时返回
+        completion: @escaping (String, URL?, URL?, Double) -> Void // 同时返回 txt 和 md URL
     ) {
         guard let url = pdfURL else { return }
         guard !isProcessing else { return }
@@ -259,12 +259,15 @@ class PDFExtractorEngine: ObservableObject {
         let targetPages = parsePageRange(pageRangeString, maxPages: pdfTotalPages)
         logOutput += "计划提取页码: \(targetPages.map { String($0) }.joined(separator: ", ")) (共 \(targetPages.count) 页)\n"
         
-        // 目标存盘路径 (与 PDF 所在文件夹同名同路径下的 .txt 文件)
+        // 目标存盘路径 (同时生成 TXT 与 MD 文件)
         let txtURL = url.deletingPathExtension().appendingPathExtension("txt")
+        let mdURL = url.deletingPathExtension().appendingPathExtension("md")
         
         // 初始化空文件
         do {
             try "".write(to: txtURL, atomically: true, encoding: .utf8)
+            let mdTitle = "# \(pdfFileName) 提取正文 (去水印)\n\n"
+            try mdTitle.write(to: mdURL, atomically: true, encoding: .utf8)
         } catch {
             logOutput += "⚠️ 警告：初始化本地写盘文件失败 \(error.localizedDescription)\n"
         }
@@ -301,7 +304,7 @@ class PDFExtractorEngine: ObservableObject {
                     DispatchQueue.main.async { [weak self] in
                         guard let self = self else { return }
                         self.isProcessing = false
-                        completion(memoryBuffer, txtURL, 0.0)
+                        completion(memoryBuffer, txtURL, mdURL, 0.0)
                     }
                     return
                 }
@@ -331,13 +334,14 @@ class PDFExtractorEngine: ObservableObject {
                 pageText = self.applyLocalCorrection(pageText)
                 
                 let pageHeader = "\n[第 \(pageIndex) 页]\n"
+                let mdPageHeader = "\n## 第 \(pageIndex) 页\n\n"
                 let pageContent = pageText + "\n"
                 
                 memoryBuffer += pageHeader + pageContent
                 
                 guard self.currentExtractTokenSafe == token else { return }
                 
-                // 追加写盘
+                // 追加写盘 (TXT)
                 do {
                     if !FileManager.default.fileExists(atPath: txtURL.path) {
                         try "".write(to: txtURL, atomically: true, encoding: .utf8)
@@ -349,7 +353,23 @@ class PDFExtractorEngine: ObservableObject {
                     }
                     try fileHandle.close()
                 } catch {
-                    self.updateStatus("⚠️ 实时追加写盘失败: \(error.localizedDescription)")
+                    self.updateStatus("⚠️ 实时追加 TXT 写盘失败: \(error.localizedDescription)")
+                }
+                
+                // 追加写盘 (Markdown)
+                do {
+                    if !FileManager.default.fileExists(atPath: mdURL.path) {
+                        let mdTitle = "# \(pdfFileName) 提取正文 (去水印)\n\n"
+                        try mdTitle.write(to: mdURL, atomically: true, encoding: .utf8)
+                    }
+                    let fileHandle = try FileHandle(forWritingTo: mdURL)
+                    try fileHandle.seekToEnd()
+                    if let writeData = (mdPageHeader + pageContent).data(using: .utf8) {
+                        try fileHandle.write(contentsOf: writeData)
+                    }
+                    try fileHandle.close()
+                } catch {
+                    self.updateStatus("⚠️ 实时追加 Markdown 写盘失败: \(error.localizedDescription)")
                 }
                 
                 self.updateProgress(Double(index + 1) / Double(totalToProcess))
@@ -385,7 +405,7 @@ class PDFExtractorEngine: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.isProcessing = false
-                completion(memoryBuffer, txtURL, avgPageTime)
+                completion(memoryBuffer, txtURL, mdURL, avgPageTime)
             }
         }
     }

@@ -8,6 +8,7 @@ struct ResultView: View {
     
     @Binding var resultText: String
     @Binding var txtFileURL: URL?
+    @Binding var mdFileURL: URL?
     @Binding var selectedTab: Int
     
     // 复制状态控制
@@ -192,24 +193,49 @@ struct ResultView: View {
                     Divider()
                         .padding(.horizontal, 24)
                     
-                    // Finder 直达 Banner
+                    // Finder 直达 Banner (同时提供 TXT 和 Markdown 文件快速定位)
                     if selectedTab == 1 {
-                        if let url = txtFileURL {
+                        if let url = txtFileURL, let mdUrl = mdFileURL {
                             HStack(spacing: 8) {
                                 Image(systemName: "checkmark.circle.fill")
                                     .foregroundColor(.green)
                                     .font(.system(size: 13, weight: .bold))
-                                Text("🎉 文字提取已完成！已自动导出原始文本至: ")
+                                Text("🎉 提取已完成！已自动导出为: ")
                                     .font(.system(size: 11.5))
                                     .foregroundColor(.primary)
-                                Text(url.lastPathComponent)
+                                
+                                Button(action: {
+                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                                }) {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "doc.text.fill")
+                                        Text(url.lastPathComponent)
+                                    }
                                     .font(.system(size: 11.5, weight: .bold))
                                     .foregroundColor(.green)
                                     .underline()
-                                    .onTapGesture {
-                                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                                }
+                                .buttonStyle(.plain)
+                                .help("点击在 Finder 中定位 TXT 文件")
+                                
+                                Text("和")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                
+                                Button(action: {
+                                    NSWorkspace.shared.activateFileViewerSelecting([mdUrl])
+                                }) {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "arrow.down.doc.fill")
+                                        Text(mdUrl.lastPathComponent)
                                     }
-                                    .help("点击在 Finder 中定位该文件")
+                                    .font(.system(size: 11.5, weight: .bold))
+                                    .foregroundColor(.green)
+                                    .underline()
+                                }
+                                .buttonStyle(.plain)
+                                .help("点击在 Finder 中定位 Markdown 文件")
+                                
                                 Spacer()
                             }
                             .padding(.vertical, 9)
@@ -225,22 +251,47 @@ struct ResultView: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     } else if selectedTab == 2 {
-                        if let url = aiEngine.aiTxtFileURL {
+                        if let url = aiEngine.aiTxtFileURL, let mdUrl = aiEngine.aiMdFileURL {
                             HStack(spacing: 8) {
                                 Image(systemName: "sparkles")
                                     .foregroundColor(.purple)
                                     .font(.system(size: 13, weight: .bold))
-                                Text("✨ AI 优化已完成！已自动导出净化文本至: ")
+                                Text("✨ AI 优化已完成！已自动导出为: ")
                                     .font(.system(size: 11.5))
                                     .foregroundColor(.primary)
-                                Text(url.lastPathComponent)
+                                
+                                Button(action: {
+                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                                }) {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "doc.text.fill")
+                                        Text(url.lastPathComponent)
+                                    }
                                     .font(.system(size: 11.5, weight: .bold))
                                     .foregroundColor(.purple)
                                     .underline()
-                                    .onTapGesture {
-                                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                                }
+                                .buttonStyle(.plain)
+                                .help("点击在 Finder 中定位 AI 净化 TXT 文件")
+                                
+                                Text("和")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                
+                                Button(action: {
+                                    NSWorkspace.shared.activateFileViewerSelecting([mdUrl])
+                                }) {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "arrow.down.doc.fill")
+                                        Text(mdUrl.lastPathComponent)
                                     }
-                                    .help("点击在 Finder 中定位该文件")
+                                    .font(.system(size: 11.5, weight: .bold))
+                                    .foregroundColor(.purple)
+                                    .underline()
+                                }
+                                .buttonStyle(.plain)
+                                .help("点击在 Finder 中定位 AI 净化 Markdown 文件")
+                                
                                 Spacer()
                             }
                             .padding(.vertical, 9)

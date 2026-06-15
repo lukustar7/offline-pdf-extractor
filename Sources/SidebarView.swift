@@ -7,6 +7,7 @@ struct SidebarView: View {
     
     @Binding var resultText: String
     @Binding var txtFileURL: URL?
+    @Binding var mdFileURL: URL?
     @Binding var selectedTab: Int
     
     // 使用 @AppStorage 对用户偏好进行持久化保存，防止重启丢失配置
@@ -73,6 +74,7 @@ struct SidebarView: View {
                                 engine.clear()
                                 resultText = ""
                                 txtFileURL = nil
+                                mdFileURL = nil
                                 selectedTab = 0
                             }
                         )
@@ -413,9 +415,10 @@ struct SidebarView: View {
             mode: extractionMode,
             eraseImageWatermark: eraseImageWatermark,
             pageRangeString: pageRangeString
-        ) { result, url, avgTime in
+        ) { result, url, mdUrl, avgTime in
             self.resultText = result
             self.txtFileURL = url
+            self.mdFileURL = mdUrl
             // 跳转至“原始提取文本”Tab (索引为 1)
             withAnimation {
                 self.selectedTab = 1

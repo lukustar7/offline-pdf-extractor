@@ -6,6 +6,7 @@ class AIProcessingEngine: NSObject, ObservableObject {
     @Published var aiProgressStatus: String = ""
     @Published var aiResultText: String = ""
     @Published var aiTxtFileURL: URL?
+    @Published var aiMdFileURL: URL?
     
     @Published var aiModels: [String] = []
     @Published var isAIFetchingModels = false
@@ -135,6 +136,7 @@ class AIProcessingEngine: NSObject, ObservableObject {
         self.aiLastCompletedChunkText = ""
         self.streamBuffer = Data()
         self.aiTxtFileURL = nil
+        self.aiMdFileURL = nil
         self.lastUIUpdateTime = Date.distantPast
         self.aiPendingOutputBuffer = ""
         
@@ -229,6 +231,8 @@ class AIProcessingEngine: NSObject, ObservableObject {
             currentAISession = nil
             
             isAIProcessing = false
+            aiTxtFileURL = nil
+            aiMdFileURL = nil
             updateAIProgressStatus("❌ 已主动取消 AI 优化净化流程。")
         }
     }
@@ -349,13 +353,21 @@ class AIProcessingEngine: NSObject, ObservableObject {
         
         let baseName = url.deletingPathExtension().lastPathComponent
         let aiTxtURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("txt")
+        let aiMdURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("md")
         
         do {
             try aiResultText.write(to: aiTxtURL, atomically: true, encoding: .utf8)
+            
+            // 为 Markdown 添加标题
+            let mdContent = "# \(baseName) AI 净化校对正文\n\n\(aiResultText)"
+            try mdContent.write(to: aiMdURL, atomically: true, encoding: .utf8)
+            
             self.updateAIProgressStatus("✅ 本地 AI 净化校对完成！已自动导出文件。")
             
             DispatchQueue.main.async { [weak self] in
-                self?.aiTxtFileURL = aiTxtURL
+                guard let self = self else { return }
+                self.aiTxtFileURL = aiTxtURL
+                self.aiMdFileURL = aiMdURL
             }
         } catch {
             self.updateAIProgressStatus("❌ 本地 AI 净化已完成，但自动写入硬盘失败: \(error.localizedDescription)")
@@ -368,28 +380,46 @@ class AIProcessingEngine: NSObject, ObservableObject {
         
         let baseName = url.deletingPathExtension().lastPathComponent
         let aiTxtURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("txt")
+        let aiMdURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("md")
         
         do {
             if aiCurrentChunkIndex == 0 {
                 try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
+                let mdTitle = "# \(baseName) AI 净化校对正文\n\n"
+                try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
             }
             
+            // 自动重建 TXT
             if !FileManager.default.fileExists(atPath: aiTxtURL.path) {
                 try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
             }
-            
             let fileHandle = try FileHandle(forWritingTo: aiTxtURL)
             try fileHandle.seekToEnd()
-            
-            // 分片以双换行隔离
             let appendDataStr = chunkContent + "\n\n"
             if let writeData = appendDataStr.data(using: .utf8) {
                 try fileHandle.write(contentsOf: writeData)
             }
             try fileHandle.close()
             
+            // 自动重建 MD
+            if !FileManager.default.fileExists(atPath: aiMdURL.path) {
+                let mdTitle = "# \(baseName) AI 净化校对正文\n\n"
+                try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
+            }
+            let fileHandleMd = try FileHandle(forWritingTo: aiMdURL)
+            try fileHandleMd.seekToEnd()
+            
+            // Markdown 中分片加个二级标题便于阅读
+            let mdAppendStr = "## 优化分段 \(aiCurrentChunkIndex + 1)\n\n" + chunkContent + "\n\n"
+            if let writeDataMd = mdAppendStr.data(using: .utf8) {
+                try fileHandleMd.write(contentsOf: writeDataMd)
+            }
+            try fileHandleMd.close()
+            
             DispatchQueue.main.async { [weak self] in
-                self?.aiTxtFileURL = aiTxtURL
+                guard let self = self else { return }
+                self.aiTxtFileURL = aiTxtURL
+                self.aiMdFileURL = aiMdURL
             }
         } catch {
             print("分片磁盘追加失败: \(error.localizedDescription)")

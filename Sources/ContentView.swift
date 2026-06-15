@@ -7,6 +7,7 @@ struct ContentView: View {
     
     @State private var resultText = ""
     @State private var txtFileURL: URL? = nil
+    @State private var mdFileURL: URL? = nil
     
     // selectedTab: 0 -> PDF 预览, 1 -> 原始提取文本, 2 -> 本地 AI 纠错净化
     @State private var selectedTab = 0
@@ -19,6 +20,7 @@ struct ContentView: View {
                 aiEngine: aiEngine,
                 resultText: $resultText,
                 txtFileURL: $txtFileURL,
+                mdFileURL: $mdFileURL,
                 selectedTab: $selectedTab
             )
             .frame(minWidth: 280, maxWidth: 500)
@@ -29,6 +31,7 @@ struct ContentView: View {
                 aiEngine: aiEngine,
                 resultText: $resultText,
                 txtFileURL: $txtFileURL,
+                mdFileURL: $mdFileURL,
                 selectedTab: $selectedTab
             )
             .frame(minWidth: 500, maxWidth: .infinity)
@@ -86,9 +89,10 @@ struct ContentView: View {
             mode: mode,
             eraseImageWatermark: eraseImageWatermark,
             pageRangeString: pageRangeString
-        ) { result, url, avgTime in
+        ) { result, url, mdUrl, avgTime in
             self.resultText = result
             self.txtFileURL = url
+            self.mdFileURL = mdUrl
             withAnimation {
                 self.selectedTab = 1 // 跳转至提取文本 Tab
             }
