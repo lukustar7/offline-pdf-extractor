@@ -247,10 +247,29 @@ struct SidebarView: View {
                                         TextField("http://localhost:11434/v1", text: $aiEngine.aiApiBaseUrl)
                                             .textFieldStyle(.roundedBorder)
                                             .disabled(aiEngine.isAIProcessing)
+                                            .onChange(of: aiEngine.aiApiBaseUrl) { newValue in
+                                                aiEngine.checkURLSafety(urlString: newValue)
+                                            }
+                                        
+                                        if aiEngine.isExternalURLWarning {
+                                            HStack(alignment: .top, spacing: 4) {
+                                                Image(systemName: "exclamationmark.triangle.fill")
+                                                    .foregroundColor(.red)
+                                                    .font(.system(size: 10))
+                                                Text("⚠️ 警示：配置了外部公网 API 地址，您的数据存在泄露风险！")
+                                                    .font(.system(size: 9))
+                                                    .foregroundColor(.red)
+                                                    .lineLimit(2)
+                                                    .lineSpacing(2)
+                                            }
+                                            .padding(.top, 2)
+                                            .transition(.opacity)
+                                        }
                                         
                                         HStack(spacing: 8) {
                                             Button("Ollama") {
                                                 aiEngine.aiApiBaseUrl = "http://localhost:11434/v1"
+                                                aiEngine.checkURLSafety(urlString: "http://localhost:11434/v1")
                                             }
                                             .buttonStyle(.bordered)
                                             .controlSize(.small)
@@ -258,6 +277,7 @@ struct SidebarView: View {
                                             
                                             Button("LM Studio") {
                                                 aiEngine.aiApiBaseUrl = "http://localhost:1234/v1"
+                                                aiEngine.checkURLSafety(urlString: "http://localhost:1234/v1")
                                             }
                                             .buttonStyle(.bordered)
                                             .controlSize(.small)
@@ -419,18 +439,18 @@ struct SidebarView: View {
             self.resultText = result
             self.txtFileURL = url
             self.mdFileURL = mdUrl
-            // 跳转至“原始提取文本”Tab (索引为 1)
+            // 跳转至“原始提取文本”Tab (索引为 0)
             withAnimation {
-                self.selectedTab = 1
+                self.selectedTab = 0
             }
         }
     }
     
     /// 发送给 AI 纠错净化
     private func startAIProcessingAction() {
-        // 跳转至“AI 净化”Tab (索引为 2)
+        // 跳转至“AI 净化”Tab (索引为 1)
         withAnimation {
-            self.selectedTab = 2
+            self.selectedTab = 1
         }
         aiEngine.processTextWithAI(
             inputText: resultText,

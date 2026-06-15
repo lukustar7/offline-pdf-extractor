@@ -160,7 +160,10 @@ class PDFExtractorEngine: ObservableObject {
                 for sel in selections {
                     if let text = sel.string?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), !text.isEmpty {
                         if text.count >= 2 && text.count <= 30 {
-                            counts[text, default: 0] += 1
+                            // 限制 counts 字典容量为最大 5000 条，保护内存占用恒定 O(1)
+                            if counts.count < 5000 || counts[text] != nil {
+                                counts[text, default: 0] += 1
+                            }
                         }
                     }
                 }

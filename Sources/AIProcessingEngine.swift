@@ -1,7 +1,7 @@
 import SwiftUI
 
-// MARK: - 本地 AI 净化服务引擎
-class AIProcessingEngine: NSObject, ObservableObject {
+// MARK: - 本地 AI 净化服务引擎 (纯 Swift 类解耦版)
+class AIProcessingEngine: ObservableObject {
     @Published var isAIProcessing = false
     @Published var aiProgressStatus: String = ""
     @Published var aiResultText: String = ""
@@ -12,8 +12,11 @@ class AIProcessingEngine: NSObject, ObservableObject {
     @Published var isAIFetchingModels = false
     
     // === 本地 AI 串行分片推理进度 ===
-    @Published var aiTotalChunks: Int = 0       // 总分段数
-    @Published var aiCurrentChunkIndex: Int = 0 // 当前分段索引 (0-indexed)
+    @Published var aiTotalChunks: Int = 0
+    @Published var aiCurrentChunkIndex: Int = 0
+    
+    // === 离线安全校验警示状态 ===
+    @Published var isExternalURLWarning = false
     
     // 使用 @AppStorage 自动将关键设置持久化到本地 UserDefaults 中
     @AppStorage("aiApiBaseUrl") var aiApiBaseUrl: String = "http://localhost:11434/v1"
@@ -26,8 +29,8 @@ class AIProcessingEngine: NSObject, ObservableObject {
     private var currentAISession: URLSession?
     private var currentAITask: URLSessionDataTask?
     
-    // TCP 数据包缓冲与解析
-    private var streamBuffer = Data()
+    // 强引用保持当前流代理，防止垃圾回收
+    private var currentStreamDelegate: AIStreamDelegate?
     
     // 分片队列缓存
     private var pendingAIChunks: [String] = []
@@ -47,12 +50,39 @@ class AIProcessingEngine: NSObject, ObservableObject {
         let id: String
     }
     
-    override init() {
-        super.init()
+    init() {
+        // 在初始化时校验已保存 API URL 的离线安全性
+        let initialUrl = UserDefaults.standard.string(forKey: "aiApiBaseUrl") ?? "http://localhost:11434/v1"
+        checkURLSafety(urlString: initialUrl)
+    }
+    
+    /// 检测 API 基础地址安全性，如果配置了外网远程公网地址，向 UI 发送警告
+    func checkURLSafety(urlString: String) {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed.isEmpty {
+            DispatchQueue.main.async { [weak self] in
+                self?.isExternalURLWarning = false
+            }
+            return
+        }
+        
+        // 白名单：环回本地地址与常见局域网内网网段
+        let isLocal = trimmed.hasPrefix("http://localhost") ||
+                      trimmed.hasPrefix("http://127.0.0.1") ||
+                      trimmed.hasPrefix("http://192.168.") ||
+                      trimmed.hasPrefix("http://10.") ||
+                      trimmed.hasPrefix("http://172.")
+                      
+        DispatchQueue.main.async { [weak self] in
+            self?.isExternalURLWarning = !isLocal
+        }
     }
     
     /// 拉取本地 AI 运行端点提供的可用模型列表
     func fetchAIModels() {
+        // 发起请求前也跑一次安全校验
+        checkURLSafety(urlString: aiApiBaseUrl)
+        
         guard let url = URL(string: aiApiBaseUrl + "/models") else {
             self.updateAIProgressStatus("❌ 无效的 API 服务地址")
             return
@@ -63,7 +93,7 @@ class AIProcessingEngine: NSObject, ObservableObject {
         
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 15.0 // 本地加载允许 15 秒超时
+        request.timeoutInterval = 15.0
         
         if !aiApiKey.isEmpty {
             request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
@@ -99,7 +129,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
                     self.updateAIProgressStatus("✅ 成功拉取到 \(modelIds.count) 个本地模型")
                 }
             } catch {
-                // 兼容非标 JSON 响应格式 (例如 LM Studio 或某些 Ollama 直出)
                 if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
                    let dataArray = json["data"] as? [[String: Any]] {
                     let ids = dataArray.compactMap { $0["id"] as? String }
@@ -126,7 +155,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
             return
         }
         
-        // 中断之前可能存在的残留推理会话
         cancelAIProcessing()
         
         self.pdfURL = fileURL
@@ -134,7 +162,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
         self.aiResultText = ""
         self.aiCompletedText = ""
         self.aiLastCompletedChunkText = ""
-        self.streamBuffer = Data()
         self.aiTxtFileURL = nil
         self.aiMdFileURL = nil
         self.lastUIUpdateTime = Date.distantPast
@@ -142,13 +169,11 @@ class AIProcessingEngine: NSObject, ObservableObject {
         
         self.systemPromptBackup = systemPrompt
         
-        // 对文本按最大 1800 字符进行智能断句切片
         let chunks = splitTextIntoChunks(cleanInput, maxChars: 1800)
         self.pendingAIChunks = chunks
         self.aiTotalChunks = chunks.count
         self.aiCurrentChunkIndex = 0
         
-        // 触发首个分段推理
         processNextChunk(systemPrompt: systemPrompt)
     }
     
@@ -156,7 +181,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
     private func processNextChunk(systemPrompt: String) {
         guard isAIProcessing else { return }
         
-        // 队列全部消费完毕，做最终存盘收尾
         if pendingAIChunks.isEmpty {
             self.updateAIProgressStatus("🎉 本地 AI 净化校对完成！已自动导出文件。")
             saveAIResultToDisk()
@@ -165,6 +189,8 @@ class AIProcessingEngine: NSObject, ObservableObject {
             }
             return
         }
+        
+        checkURLSafety(urlString: aiApiBaseUrl)
         
         guard let url = URL(string: aiApiBaseUrl + "/chat/completions") else {
             self.updateAIProgressStatus("❌ 无效的 API 服务地址")
@@ -181,7 +207,7 @@ class AIProcessingEngine: NSObject, ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 86400.0 // 允许超长推理响应时间
+        request.timeoutInterval = 86400.0
         
         if !aiApiKey.isEmpty {
             request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
@@ -209,7 +235,17 @@ class AIProcessingEngine: NSObject, ObservableObject {
             return
         }
         
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        // 实例化解耦后的流代理，并在闭包中接收回传
+        let streamDelegate = AIStreamDelegate()
+        streamDelegate.onDeltaReceived = { [weak self] content in
+            self?.appendDeltaText(content)
+        }
+        streamDelegate.onComplete = { [weak self] error in
+            self?.handleChunkComplete(error: error)
+        }
+        self.currentStreamDelegate = streamDelegate
+        
+        let session = URLSession(configuration: .default, delegate: streamDelegate, delegateQueue: nil)
         let task = session.dataTask(with: request)
         
         self.currentAISession = session
@@ -217,9 +253,35 @@ class AIProcessingEngine: NSObject, ObservableObject {
         task.resume()
     }
     
+    /// 处理单片分片传输完毕后的接力和落盘逻辑
+    private func handleChunkComplete(error: Error?) {
+        flushPendingAIText()
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.currentAITask = nil
+            self.currentAISession?.invalidateAndCancel()
+            self.currentAISession = nil
+            self.currentStreamDelegate = nil // 断开强引用
+            
+            if let error = error as NSError? {
+                if error.code == NSURLErrorCancelled {
+                    return
+                }
+                self.updateAIProgressStatus("❌ 优化生成中断: \(error.localizedDescription)")
+                self.isAIProcessing = false
+            } else {
+                self.aiCompletedText += self.aiLastCompletedChunkText + "\n\n"
+                self.appendAIResultChunkToDisk(chunkContent: self.aiLastCompletedChunkText)
+                
+                self.aiCurrentChunkIndex += 1
+                self.processNextChunk(systemPrompt: self.systemPromptBackup)
+            }
+        }
+    }
+    
     /// 中止 AI 文本润色进程
     func cancelAIProcessing() {
-        streamBuffer = Data()
         pendingAIChunks.removeAll()
         aiPendingOutputBuffer = ""
         
@@ -229,6 +291,7 @@ class AIProcessingEngine: NSObject, ObservableObject {
             
             currentAISession?.invalidateAndCancel()
             currentAISession = nil
+            currentStreamDelegate = nil
             
             isAIProcessing = false
             aiTxtFileURL = nil
@@ -247,7 +310,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
     private func appendDeltaText(_ text: String) {
         aiPendingOutputBuffer += text
         let now = Date()
-        // 超过 100ms 的时间间隔才发起一次 SwiftUI UI 更新，彻底防止 CPU 渲染风暴卡死
         if now.timeIntervalSince(lastUIUpdateTime) > 0.1 {
             flushPendingAIText()
             lastUIUpdateTime = now
@@ -284,12 +346,9 @@ class AIProcessingEngine: NSObject, ObservableObject {
             
             var cutOffset = -1
             
-            // 优先退避段落换行
             if let lastNewLineIndex = searchArea.lastIndex(of: "\n") {
                 cutOffset = searchMinIndex + searchArea.distance(from: searchArea.startIndex, to: lastNewLineIndex)
-            }
-            // 其次句终标点
-            else {
+            } else {
                 let punctuation: [Character] = ["。", "！", "？", "；", ".", "!", "?", ";"]
                 var latestPunctIndex: String.Index? = nil
                 for char in punctuation {
@@ -302,9 +361,7 @@ class AIProcessingEngine: NSObject, ObservableObject {
                 
                 if let idx = latestPunctIndex {
                     cutOffset = searchMinIndex + searchArea.distance(from: searchArea.startIndex, to: idx) + 1
-                }
-                // 再次逗号等中顿标点
-                else {
+                } else {
                     let minorPunct: [Character] = ["，", "、", ","]
                     var latestMinorIndex: String.Index? = nil
                     for char in minorPunct {
@@ -320,7 +377,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
                 }
             }
             
-            // 兜底硬切
             if cutOffset == -1 {
                 cutOffset = maxChars
             }
@@ -333,18 +389,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
         }
         
         return chunks
-    }
-    
-    private func parseDeltaContent(from jsonStr: String) -> String? {
-        guard let data = jsonStr.data(using: .utf8) else { return nil }
-        guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let first = choices.first,
-              let delta = first["delta"] as? [String: Any],
-              let content = delta["content"] as? String else {
-            return nil
-        }
-        return content
     }
     
     /// 将 AI 纠正的成果全量写盘
@@ -389,7 +433,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
                 try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
             }
             
-            // 自动重建 TXT
             if !FileManager.default.fileExists(atPath: aiTxtURL.path) {
                 try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
             }
@@ -401,7 +444,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
             }
             try fileHandle.close()
             
-            // 自动重建 MD
             if !FileManager.default.fileExists(atPath: aiMdURL.path) {
                 let mdTitle = "# \(baseName) AI 净化校对正文\n\n"
                 try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
@@ -409,7 +451,6 @@ class AIProcessingEngine: NSObject, ObservableObject {
             let fileHandleMd = try FileHandle(forWritingTo: aiMdURL)
             try fileHandleMd.seekToEnd()
             
-            // Markdown 中分片加个二级标题便于阅读
             let mdAppendStr = "## 优化分段 \(aiCurrentChunkIndex + 1)\n\n" + chunkContent + "\n\n"
             if let writeDataMd = mdAppendStr.data(using: .utf8) {
                 try fileHandleMd.write(contentsOf: writeDataMd)
@@ -427,8 +468,12 @@ class AIProcessingEngine: NSObject, ObservableObject {
     }
 }
 
-// MARK: - URLSessionDataDelegate 实现 (流式网络处理)
-extension AIProcessingEngine: URLSessionDataDelegate {
+// MARK: - 独立的 URLSessionDataDelegate 流代理，解耦 NSObject 混合继承 (1.3 节整改要求)
+final class AIStreamDelegate: NSObject, URLSessionDataDelegate {
+    private var streamBuffer = Data()
+    
+    var onDeltaReceived: ((String) -> Void)?
+    var onComplete: ((Error?) -> Void)?
     
     func urlSession(
         _ session: URLSession,
@@ -460,37 +505,24 @@ extension AIProcessingEngine: URLSessionDataDelegate {
             }
             
             if let content = parseDeltaContent(from: jsonPart) {
-                // 将接收到的字符塞入待合并节流刷新区
-                appendDeltaText(content)
+                onDeltaReceived?(content)
             }
         }
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        // 强制把残余缓冲区的字符刷出来
-        flushPendingAIText()
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.streamBuffer = Data()
-            self.currentAITask = nil
-            self.currentAISession?.invalidateAndCancel()
-            self.currentAISession = nil
-            
-            if let error = error as NSError? {
-                if error.code == NSURLErrorCancelled {
-                    return
-                }
-                self.updateAIProgressStatus("❌ 优化生成中断: \(error.localizedDescription)")
-                self.isAIProcessing = false
-            } else {
-                // 本段完成，开始接力
-                self.aiCompletedText += self.aiLastCompletedChunkText + "\n\n"
-                self.appendAIResultChunkToDisk(chunkContent: self.aiLastCompletedChunkText)
-                
-                self.aiCurrentChunkIndex += 1
-                self.processNextChunk(systemPrompt: self.systemPromptBackup)
-            }
+        onComplete?(error)
+    }
+    
+    private func parseDeltaContent(from jsonStr: String) -> String? {
+        guard let data = jsonStr.data(using: .utf8) else { return nil }
+        guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let first = choices.first,
+              let delta = first["delta"] as? [String: Any],
+              let content = delta["content"] as? String else {
+            return nil
         }
+        return content
     }
 }

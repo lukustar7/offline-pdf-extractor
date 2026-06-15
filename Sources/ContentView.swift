@@ -94,7 +94,7 @@ struct ContentView: View {
             self.txtFileURL = url
             self.mdFileURL = mdUrl
             withAnimation {
-                self.selectedTab = 1 // 跳转至提取文本 Tab
+                self.selectedTab = 0 // 跳转至提取文本 Tab (0-indexed)
             }
         }
     }
