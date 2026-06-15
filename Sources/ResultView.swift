@@ -84,7 +84,8 @@ struct ResultView: View {
                             .cornerRadius(6)
                             .lineSpacing(4)
                     }
-                    .frame(width: 500, height: 180)
+                    .frame(maxWidth: 500) // 解决 P2-4 宽度固定问题，改为最大宽度限制
+                    .frame(height: 180)
                     .padding(.top, 10)
                     
                     Spacer()
@@ -263,12 +264,9 @@ struct ResultView: View {
                             }
                         }
                         
-                        // 文本展示区域，使用系统原生 TextEditor
+                        // 文本展示区域，使用自制的只读 ReadOnlyTextView (P1-6 修复)
                         if selectedTab == 0 {
-                            TextEditor(text: previewTextBinding)
-                                .font(.system(.body, design: .default))
-                                .padding(12)
-                                .background(Color(nsColor: .textBackgroundColor))
+                            ReadOnlyTextView(text: previewTextBinding.wrappedValue)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 12)
                         } else {
@@ -294,10 +292,7 @@ struct ResultView: View {
                                         .transition(.opacity)
                                     }
                                     
-                                    TextEditor(text: aiPreviewTextBinding)
-                                        .font(.system(.body, design: .default))
-                                        .padding(12)
-                                        .background(Color(nsColor: .textBackgroundColor))
+                                    ReadOnlyTextView(text: aiPreviewTextBinding.wrappedValue)
                                         .padding(.horizontal, 16)
                                         .padding(.vertical, 12)
                                 }

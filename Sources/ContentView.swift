@@ -54,6 +54,7 @@ struct ContentView: View {
                     Button(action: openFileAction) {
                         Label("导入 PDF", systemImage: "doc.badge.plus")
                     }
+                    .keyboardShortcut("o", modifiers: .command) // 直接在可见按钮上绑定快捷键 (P3-8 修复)
                     .help("导入 PDF 文件并自动分析 (⌘O)")
                 } else {
                     Button(action: clearFileAction) {
@@ -77,6 +78,7 @@ struct ContentView: View {
                             Label("提取文字", systemImage: "play.fill")
                         }
                         .disabled(aiEngine.isAIProcessing || engine.isAnalyzingWatermarks)
+                        .keyboardShortcut("r", modifiers: .command) // 直接在可见按钮上绑定快捷键 (P3-8 修复)
                         .help("执行本地文字提取与去水印 (⌘R)")
                     }
                 }
@@ -110,18 +112,19 @@ struct ContentView: View {
                 }
             }
         }
-        // 全局键盘快捷键组件
-        .background(
-            Group {
-                Button(action: openFileAction) { Text("") }
-                    .keyboardShortcut("o", modifiers: .command)
-                
-                Button(action: startExtractionKeyboardAction) { Text("") }
-                    .keyboardShortcut("r", modifiers: .command)
+        // 挂载加载错误弹窗 (P2-6 修复)
+        .alert("加载 PDF 失败", isPresented: Binding<Bool>(
+            get: { engine.errorMessage != nil },
+            set: { show in if !show { engine.errorMessage = nil } }
+        )) {
+            Button("确定") {
+                engine.errorMessage = nil
             }
-            .opacity(0)
-            .allowsHitTesting(false)
-        )
+        } message: {
+            if let message = engine.errorMessage {
+                Text(message)
+            }
+        }
     }
     
     /// 触发 macOS 系统原生的 NSSplitViewController 侧边栏折叠机制
@@ -137,7 +140,7 @@ struct ContentView: View {
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.pdf]
         if panel.runModal() == .OK, let url = panel.url {
-            _ = engine.loadPDF(url: url)
+            engine.loadPDF(url: url)
         }
     }
     
@@ -194,11 +197,5 @@ struct ContentView: View {
             systemPrompt: systemPrompt,
             fileURL: engine.pdfURL
         )
-    }
-    
-    /// 快捷键 ⌘R 行为防冲突拦截
-    private func startExtractionKeyboardAction() {
-        guard !engine.pdfFileName.isEmpty && !engine.isProcessing && !aiEngine.isAIProcessing else { return }
-        startExtractionAction()
     }
 }

@@ -56,9 +56,15 @@ struct SidebarView: View {
                     
                     // 1. 拖拽文件状态展示
                     if engine.pdfFileName.isEmpty {
-                        DropZoneView(isDragOver: $dragOver) { url in
-                            _ = engine.loadPDF(url: url)
-                        }
+                        DropZoneView(
+                            isDragOver: $dragOver,
+                            onFileDropped: { url in
+                                engine.loadPDF(url: url)
+                            },
+                            onInvalidFileDropped: {
+                                engine.errorMessage = "仅支持导入 PDF 格式的文件。"
+                            }
+                        )
                         .padding(.top, 8)
                     } else {
                         FileInfoView(
@@ -352,7 +358,7 @@ struct SidebarView: View {
                                             .foregroundColor(.secondary)
                                         TextEditor(text: $systemPrompt)
                                             .font(.system(size: 9.5))
-                                            .frame(height: 70)
+                                            .frame(height: 120)
                                             .padding(3)
                                             .background(Color(nsColor: .textBackgroundColor))
                                             .cornerRadius(6)

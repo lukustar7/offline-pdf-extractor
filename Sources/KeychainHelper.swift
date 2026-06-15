@@ -14,18 +14,31 @@ class KeychainHelper {
     func save(_ key: String) -> Bool {
         guard let data = key.data(using: .utf8) else { return false }
         
-        // 写入前先清理旧凭证，保证唯一性
-        delete()
-        
-        let query: [String: Any] = [
+        // 优先尝试更新已有条目，避免先删后加导致的凭证丢失窗口
+        let searchQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrAccount as String: account
+        ]
+        
+        let updateAttributes: [String: Any] = [
             kSecValueData as String: data
         ]
         
-        let status = SecItemAdd(query as CFDictionary, nil)
-        return status == errSecSuccess
+        let updateStatus = SecItemUpdate(searchQuery as CFDictionary, updateAttributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return true
+        }
+        
+        // 如果条目不存在，执行新增写入
+        if updateStatus == errSecItemNotFound {
+            var addQuery = searchQuery
+            addQuery[kSecValueData as String] = data
+            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+            return addStatus == errSecSuccess
+        }
+        
+        return false
     }
     
     /// 从 Keychain 读取 API Key

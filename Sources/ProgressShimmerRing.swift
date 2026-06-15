@@ -26,7 +26,7 @@ struct ProgressShimmerRing: View {
                 VStack(spacing: 4) {
                     Text("\(Int(progress * 100))%")
                         .font(.system(size: 24, weight: .black, design: .rounded))
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                     Text("提取进度")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(.secondary)

@@ -4,6 +4,7 @@ import SwiftUI
 struct DropZoneView: View {
     @Binding var isDragOver: Bool
     var onFileDropped: (URL) -> Void
+    var onInvalidFileDropped: (() -> Void)? = nil // 拖入非 PDF 时的错误回调 (P1-5 修复)
     
     var body: some View {
         VStack(spacing: 16) {
@@ -42,13 +43,24 @@ struct DropZoneView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, error in
-                if let url = url, url.pathExtension.lowercased() == "pdf" {
-                    DispatchQueue.main.async {
-                        onFileDropped(url)
+                if let url = url {
+                    if url.pathExtension.lowercased() == "pdf" {
+                        DispatchQueue.main.async {
+                            onFileDropped(url)
+                        }
+                    } else {
+                        DispatchQueue.main.async {
+                            // 拖入非 PDF 格式文件时，执行失败反馈 (P1-5 修复)
+                            onInvalidFileDropped?()
+                        }
                     }
                 }
             }
             return true
         }
+        // 添加基本的无障碍朗读支持 (P3-7 修复)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("PDF 拖放导入区域")
+        .accessibilityHint("将 PDF 格式的文件拖拽到此区域，或点击此区域浏览并导入文件")
     }
 }

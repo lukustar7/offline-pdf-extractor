@@ -24,8 +24,7 @@ class PDFExtractorEngine: ObservableObject {
     @Published var isAnalyzingWatermarks = false
     @Published var watermarkCandidates: [WatermarkCandidate] = []
     
-    // 开启/关闭去水印总控开关
-    @Published var enableWatermarkFilter = true
+
     
     // 预计剩余时间 (ETA)
     @Published var etaString: String = ""
@@ -73,11 +72,25 @@ class PDFExtractorEngine: ObservableObject {
         set {
             tokenLock.lock()
             _currentExtractToken = newValue
+            tokenLock.unlock()
         }
     }
     
-    // 用于追踪加载任务的 Token，防止连续加载文件时的时序竞争
-    private var currentLoadToken: UUID?
+    // 用于追踪加载任务的 Token，防止连续加载文件时的时序竞争（线程安全）
+    private let loadTokenLock = NSLock()
+    private var _currentLoadToken: UUID?
+    private var currentLoadTokenSafe: UUID? {
+        get {
+            loadTokenLock.lock()
+            defer { loadTokenLock.unlock() }
+            return _currentLoadToken
+        }
+        set {
+            loadTokenLock.lock()
+            _currentLoadToken = newValue
+            loadTokenLock.unlock()
+        }
+    }
     
     // 串行 PDF 提取专用队列，彻底将所有 PDFKit 操作序列化，远离主线程 PDFView 渲染竞态
     private let pdfQueue = DispatchQueue(label: "com.pdfextractor.pdfqueue", qos: .userInitiated)
@@ -88,7 +101,6 @@ class PDFExtractorEngine: ObservableObject {
         "我门": "我们",
         "系境": "系统",
         "支特": "支持",
-        "确保": "确保",
         "功育": "功能",
         "用广": "用户",
         "设量": "设置",
@@ -99,14 +111,14 @@ class PDFExtractorEngine: ObservableObject {
     
     init() {}
     
-    /// 加载 PDF 文件并对其进行初始化扫描
-    func loadPDF(url: URL) -> Bool {
-        // 主线程加载 PDFDocument 仅用作 UI 预览和总页数获取
-        guard let doc = PDFDocument(url: url) else { return false }
-        self.pdfDocument = doc
+    // 用于通知 UI 加载失败时的错误信息 (P2-6 修复)
+    @Published var errorMessage: String? = nil
+    
+    /// 在后台异步加载 PDF 文件并进行水印词初始化扫描，规避大文件同步加载阻塞主线程 (P2-3, P2-6 修复)
+    func loadPDF(url: URL) {
+        self.errorMessage = nil
         self.pdfURL = url
         self.pdfFileName = url.lastPathComponent
-        self.pdfTotalPages = doc.pageCount
         
         // 计算文件大小
         if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
@@ -120,19 +132,55 @@ class PDFExtractorEngine: ObservableObject {
         }
         
         let token = UUID()
-        self.currentLoadToken = token
+        self.currentLoadTokenSafe = token
         
-        self.logOutput = "文件成功加载: \(url.lastPathComponent)\n"
-        self.currentStatus = "就绪，正在自动分析水印词..."
+        self.isAnalyzingWatermarks = true
+        self.currentStatus = "正在加载文件..."
+        self.logOutput = "正在加载文件: \(url.lastPathComponent)\n"
         
-        // 启动后台队列独立加载 PDFDocument 分析水印词
-        analyzeWatermarksInQueue(url: url, token: token)
-        return true
+        // 移至后台队列加载，完全避开主线程卡顿
+        pdfQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            // 确保没有被更新的加载任务覆盖
+            guard self.currentLoadTokenSafe == token else { return }
+            
+            guard let doc = PDFDocument(url: url) else {
+                DispatchQueue.main.async {
+                    guard self.currentLoadTokenSafe == token else { return }
+                    self.pdfDocument = nil
+                    self.pdfFileName = ""
+                    self.pdfFileSize = ""
+                    self.pdfTotalPages = 0
+                    self.isAnalyzingWatermarks = false
+                    self.currentStatus = "加载 PDF 失败"
+                    self.logOutput += "错误: 无法解析或加载该 PDF 文件。\n"
+                    self.errorMessage = "无法解析或加载此 PDF 文件。该文件可能已损坏、被加密或格式不正确。"
+                }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                guard self.currentLoadTokenSafe == token else { return }
+                self.pdfDocument = doc
+                self.pdfTotalPages = doc.pageCount
+                self.logOutput += "文件成功加载: \(url.lastPathComponent)\n"
+                self.currentStatus = "就绪，正在自动分析水印词..."
+                
+                // 加载成功后，在后台启动水印词分析任务
+                self.analyzeWatermarksInQueue(url: url, token: token)
+            }
+        }
     }
     
     /// 清除当前加载的文件并强行中断正在运行的后台任务
     func clear() {
-        self.currentLoadToken = nil
+        // 先中止所有后台任务并递增 Token，确保旧任务立即失效不再写入
+        cancelPDFExtraction()
+        self.currentLoadTokenSafe = nil
+        self.currentExtractTokenSafe = nil
+        
+        // 然后安全重置全部 UI 状态
         self.isAnalyzingWatermarks = false
         self.pdfDocument = nil
         self.pdfURL = nil
@@ -141,11 +189,11 @@ class PDFExtractorEngine: ObservableObject {
         self.pdfTotalPages = 0
         self.watermarkCandidates = []
         self.progress = 0.0
+        self.etaString = ""
         self.isProcessing = false
+        self.isCancelledSafe = false
         self.currentStatus = "未加载文件"
         self.logOutput = ""
-        
-        cancelPDFExtraction()
     }
     
     /// 在后台串行队列中独立创建 PDFDocument 实例分析水印词，物理隔离主线程的 PDFDocument
@@ -166,7 +214,7 @@ class PDFExtractorEngine: ObservableObject {
             let maxPagesToScan = min(pageCount, 30)
             
             for i in 0..<maxPagesToScan {
-                guard self.currentLoadToken == token else { return }
+                guard self.currentLoadTokenSafe == token else { return }
                 guard let page = doc.page(at: i) else { continue }
                 let selections = page.selection(for: page.bounds(for: .mediaBox))?.selectionsByLine() ?? []
                 for sel in selections {
@@ -188,7 +236,7 @@ class PDFExtractorEngine: ObservableObject {
             
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                guard self.currentLoadToken == token else { return }
+                guard self.currentLoadTokenSafe == token else { return }
                 
                 self.watermarkCandidates = candidates
                 self.isAnalyzingWatermarks = false
@@ -429,6 +477,7 @@ class PDFExtractorEngine: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.isProcessing = false
+                self.etaString = ""
                 completion(memoryBuffer, txtURL, mdURL, avgPageTime)
             }
         }
@@ -448,6 +497,13 @@ class PDFExtractorEngine: ObservableObject {
             guard let self = self else { return }
             self.currentStatus = status
             self.logOutput += status + "\n"
+            // 限制日志最大长度，防止数百页 PDF 处理时内存与 SwiftUI 渲染卡顿
+            if self.logOutput.count > 50000 {
+                let lines = self.logOutput.components(separatedBy: "\n")
+                if lines.count > 200 {
+                    self.logOutput = "...(旧日志已截断)...\n" + lines.suffix(200).joined(separator: "\n")
+                }
+            }
         }
     }
     
@@ -656,7 +712,10 @@ class PDFExtractorEngine: ObservableObject {
     /// 高阶物理渲染：直接生成底层的 CGImage，极大地节省了 NSImage 包装的转码时延和内存泄露
     private func renderPageToCGImage(page: PDFPage, watermarkSelections: [PDFSelection]) -> CGImage? {
         let pageBounds = page.bounds(for: .mediaBox)
-        let scale: CGFloat = 3.0
+        // 动态计算缩放比例：确保渲染分辨率最大边不超过 4096 像素，防止超大页面 OOM 崩溃
+        let maxPixelDimension: CGFloat = 4096.0
+        let maxPageDimension = max(pageBounds.width, pageBounds.height)
+        let scale: CGFloat = min(3.0, maxPixelDimension / maxPageDimension)
         let width = pageBounds.width * scale
         let height = pageBounds.height * scale
         

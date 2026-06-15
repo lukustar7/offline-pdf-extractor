@@ -77,7 +77,8 @@ class AIProcessingEngine: ObservableObject {
     
     init() {
         // 从安全的 Keychain 中加载保存的 API Key
-        self.aiApiKey = KeychainHelper.shared.read() ?? ""
+        // 使用 _aiApiKey 直接初始化底层 Published 存储，绕过 didSet 防止空值覆写已有凭证
+        _aiApiKey = Published(initialValue: KeychainHelper.shared.read() ?? "")
         
         // 在初始化时校验已保存 API URL 的离线安全性
         let initialUrl = UserDefaults.standard.string(forKey: "aiApiBaseUrl") ?? "http://localhost:11434/v1"
@@ -94,12 +95,30 @@ class AIProcessingEngine: ObservableObject {
             return
         }
         
-        // 白名单：环回本地地址与常见局域网内网网段
-        let isLocal = trimmed.hasPrefix("http://localhost") ||
-                      trimmed.hasPrefix("http://127.0.0.1") ||
-                      trimmed.hasPrefix("http://192.168.") ||
-                      trimmed.hasPrefix("http://10.") ||
-                      trimmed.hasPrefix("http://172.")
+        // 提取 URL 的 host 部分用于精确匹配（同时兼容 http/https）
+        guard let urlComponents = URLComponents(string: trimmed),
+              let host = urlComponents.host else {
+            DispatchQueue.main.async { [weak self] in
+                self?.isExternalURLWarning = true
+            }
+            return
+        }
+        
+        // 白名单：环回本地地址与 RFC 1918 内网网段
+        var isLocal = false
+        if host == "localhost" || host == "127.0.0.1" {
+            isLocal = true
+        } else if host.hasPrefix("192.168.") {
+            isLocal = true
+        } else if host.hasPrefix("10.") {
+            isLocal = true
+        } else if host.hasPrefix("172.") {
+            // RFC 1918: 仅 172.16.0.0 ~ 172.31.255.255 属于内网私有地址
+            let segments = host.split(separator: ".")
+            if segments.count >= 2, let second = Int(segments[1]) {
+                isLocal = (16...31).contains(second)
+            }
+        }
                       
         DispatchQueue.main.async { [weak self] in
             self?.isExternalURLWarning = !isLocal
@@ -152,7 +171,7 @@ class AIProcessingEngine: ObservableObject {
                     guard let self = self else { return }
                     self.aiModels = modelIds
                     if !modelIds.isEmpty && (self.aiSelectedModel.isEmpty || !modelIds.contains(self.aiSelectedModel)) {
-                        self.aiSelectedModel = modelIds.first!
+                        self.aiSelectedModel = modelIds.first ?? ""
                     }
                     self.updateAIProgressStatus("✅ 成功拉取到 \(modelIds.count) 个本地模型")
                 }
@@ -164,7 +183,7 @@ class AIProcessingEngine: ObservableObject {
                         guard let self = self else { return }
                         self.aiModels = ids
                         if !ids.isEmpty && (self.aiSelectedModel.isEmpty || !ids.contains(self.aiSelectedModel)) {
-                            self.aiSelectedModel = ids.first!
+                            self.aiSelectedModel = ids.first ?? ""
                         }
                         self.updateAIProgressStatus("✅ 成功获取 \(ids.count) 个模型")
                     }
@@ -238,7 +257,7 @@ class AIProcessingEngine: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 86400.0
+        request.timeoutInterval = 600.0
         
         if !aiApiKey.isEmpty {
             request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
@@ -290,11 +309,14 @@ class AIProcessingEngine: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
+            // 如果任务已被 cancel 清理，直接丢弃残余回调
+            guard self.isAIProcessing else { return }
+            
             // 强力冲刷未写入界面的残留缓冲
             self.flushPendingAIText()
             
             self.currentAITask = nil
-            self.currentAISession?.invalidateAndCancel()
+            self.currentAISession?.finishTasksAndInvalidate()
             self.currentAISession = nil
             self.currentStreamDelegate = nil // 断开强引用
             
@@ -323,22 +345,31 @@ class AIProcessingEngine: ObservableObject {
         // 强制递增时序 Token。所有已经在 ioQueue 线程中排队挂起的写盘任务，其持有的旧 Token 均将失效
         currentAITokenSafe = UUID()
         
-        // 主线程状态安全清理
-        pendingAIChunks.removeAll()
-        aiPendingOutputBuffer = ""
+        // 确保所有 @Published 属性修改在主线程执行，防止非主线程调用时的 Data Race 崩溃
+        let cleanup = { [weak self] in
+            guard let self = self else { return }
+            self.pendingAIChunks.removeAll()
+            self.aiPendingOutputBuffer = ""
+            
+            if let task = self.currentAITask {
+                task.cancel()
+                self.currentAITask = nil
+                
+                self.currentAISession?.invalidateAndCancel()
+                self.currentAISession = nil
+                self.currentStreamDelegate = nil
+                
+                self.isAIProcessing = false
+                self.aiTxtFileURL = nil
+                self.aiMdFileURL = nil
+                self.updateAIProgressStatus("❌ 已主动取消 AI 优化净化流程。")
+            }
+        }
         
-        if let task = currentAITask {
-            task.cancel()
-            currentAITask = nil
-            
-            currentAISession?.invalidateAndCancel()
-            currentAISession = nil
-            currentStreamDelegate = nil
-            
-            isAIProcessing = false
-            aiTxtFileURL = nil
-            aiMdFileURL = nil
-            updateAIProgressStatus("❌ 已主动取消 AI 优化净化流程。")
+        if Thread.isMainThread {
+            cleanup()
+        } else {
+            DispatchQueue.main.async(execute: cleanup)
         }
     }
     
