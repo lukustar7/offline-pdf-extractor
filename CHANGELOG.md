@@ -4,6 +4,15 @@
 
 本项目遵循 [语义化版本控制 (SemVer)](https://semver.org/spec/v2.0.0.html) 规范。
 
+## [1.8.1] - 2026-06-15
+
+### Changed
+- **侧边栏重塑为纵向 macOS Inspector 风格布局**：彻底移除 SwiftUI `Form` 容器以避免窄侧边栏下的横向空间挤压，改用 `ScrollView` + 垂直 `VStack` 对齐布局。将标签置于控件正上方，表单控件及输入框宽度拉满，拥有极大的操作面积与完美的视觉清晰度。
+- **视觉层级划分优化**：采用淡雅的灰色 Section Group 标题与 `Divider` 进行段落划分，控件组整体向右缩进 12pt 建立清晰层级，避免双重背景底色冲突，支持原生磨砂透光。
+
+### Fixed
+- **消除 API 兼容警告**：针对 macOS 14+ 下对 `.onChange(of:perform:)` 废弃警告的问题，设计了 `onChangeCompatible` 扩展修饰符，实现在高版本系统上无缝匹配最新 API 的同时，向下兼容至 macOS 11.0 最低部署目标。
+
 ## [1.8.0] - 2026-06-15
 
 ### Added
