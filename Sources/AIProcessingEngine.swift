@@ -20,8 +20,14 @@ class AIProcessingEngine: ObservableObject {
     
     // 使用 @AppStorage 自动将关键设置持久化到本地 UserDefaults 中
     @AppStorage("aiApiBaseUrl") var aiApiBaseUrl: String = "http://localhost:11434/v1"
-    @AppStorage("aiApiKey") var aiApiKey: String = ""
     @AppStorage("aiSelectedModel") var aiSelectedModel: String = ""
+    
+    // API Key 采用 Keychain 进行安全保存，对外依然暴露给 SwiftUI 作为 @Published 响应式属性
+    @Published var aiApiKey: String = "" {
+        didSet {
+            KeychainHelper.shared.save(aiApiKey)
+        }
+    }
     
     private var pdfURL: URL?
     
@@ -42,6 +48,9 @@ class AIProcessingEngine: ObservableObject {
     private var lastUIUpdateTime = Date.distantPast
     private var aiPendingOutputBuffer = ""
     
+    // 专职后台磁盘 I/O 串行队列，绝不阻塞主线程 UI
+    private let ioQueue = DispatchQueue(label: "com.pdfextractor.ioqueue", qos: .background)
+    
     // 模型列表解析结构
     struct AIModelResponse: Codable {
         let data: [AIModelData]
@@ -51,6 +60,9 @@ class AIProcessingEngine: ObservableObject {
     }
     
     init() {
+        // 从安全的 Keychain 中加载保存的 API Key
+        self.aiApiKey = KeychainHelper.shared.read() ?? ""
+        
         // 在初始化时校验已保存 API URL 的离线安全性
         let initialUrl = UserDefaults.standard.string(forKey: "aiApiBaseUrl") ?? "http://localhost:11434/v1"
         checkURLSafety(urlString: initialUrl)
@@ -255,10 +267,13 @@ class AIProcessingEngine: ObservableObject {
     
     /// 处理单片分片传输完毕后的接力和落盘逻辑
     private func handleChunkComplete(error: Error?) {
-        flushPendingAIText()
-        
+        // 在 delegate 网络回调线程中，必须安全分发到主线程，避免 Data Race 崩溃
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            
+            // 强力冲刷未写入界面的残留缓冲
+            self.flushPendingAIText()
+            
             self.currentAITask = nil
             self.currentAISession?.invalidateAndCancel()
             self.currentAISession = nil
@@ -272,7 +287,11 @@ class AIProcessingEngine: ObservableObject {
                 self.isAIProcessing = false
             } else {
                 self.aiCompletedText += self.aiLastCompletedChunkText + "\n\n"
-                self.appendAIResultChunkToDisk(chunkContent: self.aiLastCompletedChunkText)
+                
+                // 将文件写入异步派发至后台 I/O 线程，解决 UI 发生卡顿
+                let chunkToSave = self.aiLastCompletedChunkText
+                let chunkIdx = self.aiCurrentChunkIndex
+                self.appendAIResultChunkToDisk(chunkContent: chunkToSave, chunkIndex: chunkIdx)
                 
                 self.aiCurrentChunkIndex += 1
                 self.processNextChunk(systemPrompt: self.systemPromptBackup)
@@ -282,6 +301,7 @@ class AIProcessingEngine: ObservableObject {
     
     /// 中止 AI 文本润色进程
     func cancelAIProcessing() {
+        // 主线程状态安全清理
         pendingAIChunks.removeAll()
         aiPendingOutputBuffer = ""
         
@@ -306,30 +326,30 @@ class AIProcessingEngine: ObservableObject {
         }
     }
     
-    /// 节流刷新：将网络字符追加入待更新缓存中，限频刷新 UI
+    /// 节流刷新：强制分发到主线程，杜绝多线程读写 aiPendingOutputBuffer 导致崩溃 (Data Race Fix)
     private func appendDeltaText(_ text: String) {
-        aiPendingOutputBuffer += text
-        let now = Date()
-        if now.timeIntervalSince(lastUIUpdateTime) > 0.1 {
-            flushPendingAIText()
-            lastUIUpdateTime = now
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.aiPendingOutputBuffer += text
+            let now = Date()
+            if now.timeIntervalSince(self.lastUIUpdateTime) > 0.1 {
+                self.flushPendingAIText()
+                self.lastUIUpdateTime = now
+            }
         }
     }
     
-    /// 强制冲刷增量字符缓冲区到 UI
+    /// 强制冲刷增量字符缓冲区到 UI (必须在主线程中运行)
     private func flushPendingAIText() {
         guard !aiPendingOutputBuffer.isEmpty else { return }
         let textToAppend = aiPendingOutputBuffer
         aiPendingOutputBuffer = ""
         
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.aiLastCompletedChunkText += textToAppend
-            self.aiResultText = self.aiCompletedText + self.aiLastCompletedChunkText
-        }
+        self.aiLastCompletedChunkText += textToAppend
+        self.aiResultText = self.aiCompletedText + self.aiLastCompletedChunkText
     }
     
-    /// 【退避断句切分算法】：确保句子或段落的完整，同时有硬切边界
+    /// 【退避断句切分算法】：排版与分片重叠度智能预处理
     private func splitTextIntoChunks(_ text: String, maxChars: Int = 1800) -> [String] {
         var chunks: [String] = []
         var remainingText = text
@@ -391,7 +411,7 @@ class AIProcessingEngine: ObservableObject {
         return chunks
     }
     
-    /// 将 AI 纠正的成果全量写盘
+    /// 将 AI 纠正的成果异步写盘 (由 ioQueue 执行)
     private func saveAIResultToDisk() {
         guard let url = pdfURL, !aiResultText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
@@ -399,71 +419,79 @@ class AIProcessingEngine: ObservableObject {
         let aiTxtURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("txt")
         let aiMdURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("md")
         
-        do {
-            try aiResultText.write(to: aiTxtURL, atomically: true, encoding: .utf8)
-            
-            // 为 Markdown 添加标题
-            let mdContent = "# \(baseName) AI 净化校对正文\n\n\(aiResultText)"
-            try mdContent.write(to: aiMdURL, atomically: true, encoding: .utf8)
-            
-            self.updateAIProgressStatus("✅ 本地 AI 净化校对完成！已自动导出文件。")
-            
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.aiTxtFileURL = aiTxtURL
-                self.aiMdFileURL = aiMdURL
+        let finalResultText = aiResultText // 获取快照，安全传给子线程
+        
+        ioQueue.async { [weak self] in
+            guard let self = self else { return }
+            do {
+                try finalResultText.write(to: aiTxtURL, atomically: true, encoding: .utf8)
+                
+                // 为 Markdown 添加标题
+                let mdContent = "# \(baseName) AI 净化校对正文\n\n\(finalResultText)"
+                try mdContent.write(to: aiMdURL, atomically: true, encoding: .utf8)
+                
+                self.updateAIProgressStatus("✅ 本地 AI 净化校对完成！已自动导出文件。")
+                
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    self.aiTxtFileURL = aiTxtURL
+                    self.aiMdFileURL = aiMdURL
+                }
+            } catch {
+                self.updateAIProgressStatus("❌ 本地 AI 净化已完成，但自动写入硬盘失败: \(error.localizedDescription)")
             }
-        } catch {
-            self.updateAIProgressStatus("❌ 本地 AI 净化已完成，但自动写入硬盘失败: \(error.localizedDescription)")
         }
     }
     
-    /// 分片落盘：在每分片完成时追加写盘
-    private func appendAIResultChunkToDisk(chunkContent: String) {
+    /// 分片落盘：在每分片完成时在 ioQueue 中追加写盘，彻底规避主线程 IO
+    private func appendAIResultChunkToDisk(chunkContent: String, chunkIndex: Int) {
         guard let url = pdfURL, !chunkContent.isEmpty else { return }
         
         let baseName = url.deletingPathExtension().lastPathComponent
         let aiTxtURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("txt")
         let aiMdURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("md")
         
-        do {
-            if aiCurrentChunkIndex == 0 {
-                try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
-                let mdTitle = "# \(baseName) AI 净化校对正文\n\n"
-                try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
+        ioQueue.async { [weak self] in
+            guard let self = self else { return }
+            do {
+                if chunkIndex == 0 {
+                    try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
+                    let mdTitle = "# \(baseName) AI 净化校对正文\n\n"
+                    try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
+                }
+                
+                if !FileManager.default.fileExists(atPath: aiTxtURL.path) {
+                    try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
+                }
+                let fileHandle = try FileHandle(forWritingTo: aiTxtURL)
+                try fileHandle.seekToEnd()
+                let appendDataStr = chunkContent + "\n\n"
+                if let writeData = appendDataStr.data(using: .utf8) {
+                    try fileHandle.write(contentsOf: writeData)
+                }
+                try fileHandle.close()
+                
+                if !FileManager.default.fileExists(atPath: aiMdURL.path) {
+                    let mdTitle = "# \(baseName) AI 净化校对正文\n\n"
+                    try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
+                }
+                let fileHandleMd = try FileHandle(forWritingTo: aiMdURL)
+                try fileHandleMd.seekToEnd()
+                
+                let mdAppendStr = "## 优化分段 \(chunkIndex + 1)\n\n" + chunkContent + "\n\n"
+                if let writeDataMd = mdAppendStr.data(using: .utf8) {
+                    try fileHandleMd.write(contentsOf: writeDataMd)
+                }
+                try fileHandleMd.close()
+                
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    self.aiTxtFileURL = aiTxtURL
+                    self.aiMdFileURL = aiMdURL
+                }
+            } catch {
+                print("分片磁盘追加失败: \(error.localizedDescription)")
             }
-            
-            if !FileManager.default.fileExists(atPath: aiTxtURL.path) {
-                try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
-            }
-            let fileHandle = try FileHandle(forWritingTo: aiTxtURL)
-            try fileHandle.seekToEnd()
-            let appendDataStr = chunkContent + "\n\n"
-            if let writeData = appendDataStr.data(using: .utf8) {
-                try fileHandle.write(contentsOf: writeData)
-            }
-            try fileHandle.close()
-            
-            if !FileManager.default.fileExists(atPath: aiMdURL.path) {
-                let mdTitle = "# \(baseName) AI 净化校对正文\n\n"
-                try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
-            }
-            let fileHandleMd = try FileHandle(forWritingTo: aiMdURL)
-            try fileHandleMd.seekToEnd()
-            
-            let mdAppendStr = "## 优化分段 \(aiCurrentChunkIndex + 1)\n\n" + chunkContent + "\n\n"
-            if let writeDataMd = mdAppendStr.data(using: .utf8) {
-                try fileHandleMd.write(contentsOf: writeDataMd)
-            }
-            try fileHandleMd.close()
-            
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.aiTxtFileURL = aiTxtURL
-                self.aiMdFileURL = aiMdURL
-            }
-        } catch {
-            print("分片磁盘追加失败: \(error.localizedDescription)")
         }
     }
 }

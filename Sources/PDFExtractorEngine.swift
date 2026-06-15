@@ -2,6 +2,16 @@ import SwiftUI
 import PDFKit
 import Vision
 
+// MARK: - 支持的去水印与正文场景模式
+enum WatermarkRemovalMode: String, CaseIterable, Identifiable, Codable {
+    case auto = "智能诊断匹配（推荐）"
+    case modeA = "纯文本过滤（文字版 PDF 专用）"
+    case modeB = "物理遮罩 + OCR（正文扫描件 + 文字水印）"
+    case modeC = "OCR + 智能过滤（纯扫描件水印）"
+    
+    var id: String { self.rawValue }
+}
+
 // MARK: - 核心 PDF 处理与 OCR 引擎
 class PDFExtractorEngine: ObservableObject {
     @Published var isProcessing = false
@@ -13,6 +23,9 @@ class PDFExtractorEngine: ObservableObject {
     @Published var pdfTotalPages: Int = 0
     @Published var isAnalyzingWatermarks = false
     @Published var watermarkCandidates: [WatermarkCandidate] = []
+    
+    // 开启/关闭去水印总控开关
+    @Published var enableWatermarkFilter = true
     
     // 预计剩余时间 (ETA)
     @Published var etaString: String = ""
@@ -60,7 +73,6 @@ class PDFExtractorEngine: ObservableObject {
         set {
             tokenLock.lock()
             _currentExtractToken = newValue
-            tokenLock.unlock()
         }
     }
     
@@ -191,7 +203,7 @@ class PDFExtractorEngine: ObservableObject {
         }
     }
     
-    /// 解析页码范围输入字符串，返回需要处理的 1-indexed 页码列表
+    /// 解析页码范围输入字符串，返回需要处理的 1-indexed 页码列表 (支持中英文多种连接符)
     func parsePageRange(_ rangeStr: String, maxPages: Int) -> [Int] {
         let trimmed = rangeStr.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
@@ -201,10 +213,13 @@ class PDFExtractorEngine: ObservableObject {
         var pages = Set<Int>()
         // 兼容中文逗号和英文逗号
         let parts = trimmed.components(separatedBy: CharacterSet(charactersIn: ",，"))
+        let connectors = CharacterSet(charactersIn: "-~～—")
+        
         for part in parts {
             let cleanPart = part.trimmingCharacters(in: .whitespacesAndNewlines)
-            if cleanPart.contains("-") {
-                let rangeParts = cleanPart.components(separatedBy: "-")
+            
+            if cleanPart.rangeOfCharacter(from: connectors) != nil {
+                let rangeParts = cleanPart.components(separatedBy: connectors)
                 if rangeParts.count == 2,
                    let start = Int(rangeParts[0].trimmingCharacters(in: .whitespaces)),
                    let end = Int(rangeParts[1].trimmingCharacters(in: .whitespaces)) {
@@ -225,15 +240,17 @@ class PDFExtractorEngine: ObservableObject {
         return pages.isEmpty ? Array(1...maxPages) : pages.sorted()
     }
     
-    /// 执行文字提取与去水印任务
+    /// 执行文字提取与去水印任务 (完整三大去水印模式支持)
     func extractText(
         activeWatermarks: Set<String>,
         customWatermarks: String,
         ignoreCase: Bool,
         mode: ExtractionMode,
+        watermarkRemovalMode: WatermarkRemovalMode,
+        enableWatermarkFilter: Bool,
         eraseImageWatermark: Bool,
         pageRangeString: String,
-        completion: @escaping (String, URL?, URL?, Double) -> Void // 同时返回 txt 和 md URL
+        completion: @escaping (String, URL?, URL?, Double) -> Void
     ) {
         guard let url = pdfURL else { return }
         guard !isProcessing else { return }
@@ -244,7 +261,7 @@ class PDFExtractorEngine: ObservableObject {
         isProcessing = true
         isCancelledSafe = false
         progress = 0.0
-        etaString = "" // 重置 ETA
+        etaString = "" 
         currentStatus = "准备开始处理..."
         logOutput += "\n=== 开始执行文字提取与去水印 ===\n"
         
@@ -255,8 +272,13 @@ class PDFExtractorEngine: ObservableObject {
             .filter { !$0.isEmpty }
         
         let allWatermarkFilters = activeWatermarks.union(customList)
-        logOutput += "生效的水印过滤词: \(allWatermarkFilters.sorted().joined(separator: ", "))\n"
-        logOutput += "模式: \(mode.rawValue)\n"
+        if enableWatermarkFilter {
+            logOutput += "生效的水印过滤词: \(allWatermarkFilters.sorted().joined(separator: ", "))\n"
+        } else {
+            logOutput += "🚫 水印识别与过滤开关已关闭，保留原汁原味提取。\n"
+        }
+        logOutput += "正文提取通道: \(mode.rawValue)\n"
+        logOutput += "去水印工作模式: \(watermarkRemovalMode.rawValue)\n"
         logOutput += "图像擦除水印: \(eraseImageWatermark ? "开启" : "关闭")\n"
         
         let targetPages = parsePageRange(pageRangeString, maxPages: pdfTotalPages)
@@ -266,23 +288,23 @@ class PDFExtractorEngine: ObservableObject {
         let txtURL = url.deletingPathExtension().appendingPathExtension("txt")
         let mdURL = url.deletingPathExtension().appendingPathExtension("md")
         
-        // 初始化空文件
-        do {
-            try "".write(to: txtURL, atomically: true, encoding: .utf8)
-            let mdTitle = "# \(pdfFileName) 提取正文 (去水印)\n\n"
-            try mdTitle.write(to: mdURL, atomically: true, encoding: .utf8)
-        } catch {
-            logOutput += "⚠️ 警告：初始化本地写盘文件失败 \(error.localizedDescription)\n"
-        }
-        
         let startTime = Date()
         
-        // 将主要 PDF 运算分发到后台串行队列
+        // 将主要 PDF 运算分发到后台串行队列，包含初次空文件写入以防主线程卡死
         pdfQueue.async { [weak self] in
             guard let self = self else { return }
             guard self.currentExtractTokenSafe == token else { return }
             
-            // 1. 后台线程独立重新加载 PDFDocument，解决主线程/子线程共享 PDFKit 实例崩溃问题
+            // 异步初始化空文件，保护主线程不发生 IO 卡死
+            do {
+                try "".write(to: txtURL, atomically: true, encoding: .utf8)
+                let mdTitle = "# \(self.pdfFileName) 提取正文 (去水印)\n\n"
+                try mdTitle.write(to: mdURL, atomically: true, encoding: .utf8)
+            } catch {
+                self.updateStatus("⚠️ 警告：初始化本地写盘文件失败 \(error.localizedDescription)")
+            }
+            
+            // 后台线程独立重新加载 PDFDocument，解决主线程/子线程共享 PDFKit 实例崩溃问题
             guard let doc = PDFDocument(url: url) else {
                 self.updateStatus("❌ 无法以安全模式在后台读取 PDF 文档。")
                 DispatchQueue.main.async { [weak self] in
@@ -318,10 +340,7 @@ class PDFExtractorEngine: ObservableObject {
                 
                 // OCR 内存释放隔离，解决大文件 OCR 时 OOM 的问题
                 autoreleasepool {
-                    // PDFKit 页码索引为 0-based，故实际页码为 pageIndex - 1
-                    guard let page = doc.page(at: pageIndex - 1) else {
-                        return
-                    }
+                    guard let page = doc.page(at: pageIndex - 1) else { return }
                     
                     pageText = self.processPage(
                         page: page,
@@ -329,6 +348,8 @@ class PDFExtractorEngine: ObservableObject {
                         watermarkFilters: allWatermarkFilters,
                         ignoreCase: ignoreCase,
                         mode: mode,
+                        watermarkRemovalMode: watermarkRemovalMode,
+                        enableWatermarkFilter: enableWatermarkFilter,
                         eraseImageWatermark: eraseImageWatermark
                     )
                 }
@@ -362,7 +383,7 @@ class PDFExtractorEngine: ObservableObject {
                 // 追加写盘 (Markdown)
                 do {
                     if !FileManager.default.fileExists(atPath: mdURL.path) {
-                        let mdTitle = "# \(pdfFileName) 提取正文 (去水印)\n\n"
+                        let mdTitle = "# \(self.pdfFileName) 提取正文 (去水印)\n\n"
                         try mdTitle.write(to: mdURL, atomically: true, encoding: .utf8)
                     }
                     let fileHandle = try FileHandle(forWritingTo: mdURL)
@@ -446,34 +467,38 @@ class PDFExtractorEngine: ObservableObject {
         return corrected
     }
     
+    /// 底层分流与去水印核心算法 (三种不同 PDF 水印/正文场景)
     private func processPage(
         page: PDFPage,
         pageIndex: Int,
         watermarkFilters: Set<String>,
         ignoreCase: Bool,
         mode: ExtractionMode,
+        watermarkRemovalMode: WatermarkRemovalMode,
+        enableWatermarkFilter: Bool,
         eraseImageWatermark: Bool
     ) -> String {
         let allSelections = page.selection(for: page.bounds(for: .mediaBox))?.selectionsByLine() ?? []
-        var watermarkSelections: [PDFSelection] = []
-        var normalTextPieces: [String] = []
-        var normalCharCount = 0
         
-        for sel in allSelections {
-            guard let text = sel.string else { continue }
-            
-            if isWatermark(text: text, filters: watermarkFilters, ignoreCase: ignoreCase) {
-                watermarkSelections.append(sel)
+        // 1. 全局开关控制：若禁用去水印，则过滤词为空
+        let activeFilters = enableWatermarkFilter ? watermarkFilters : Set<String>()
+        
+        // 2. 诊断与分流策略
+        var resolvedMode = watermarkRemovalMode
+        if resolvedMode == .auto {
+            let rawCharCount = allSelections.reduce(0) { $0 + ($1.string?.count ?? 0) }
+            if rawCharCount > 100 {
+                resolvedMode = .modeA // 正文字词量大 ➡️ 模式 A (纯文本过滤)
             } else {
-                normalTextPieces.append(text)
-                normalCharCount += text.count
+                resolvedMode = (rawCharCount > 0) ? .modeB : .modeC // 文字少且有可选字 ➡️ 模式 B，完全无字 ➡️ 模式 C
             }
         }
         
+        // 3. 通道抉择 (结合用户强制指定的 OCR 设置)
         let shouldOCR: Bool
         switch mode {
         case .smart:
-            shouldOCR = normalCharCount < 40
+            shouldOCR = (resolvedMode == .modeC) || (resolvedMode == .modeB)
         case .textOnly:
             shouldOCR = false
         case .ocrOnly:
@@ -483,53 +508,80 @@ class PDFExtractorEngine: ObservableObject {
         var pageResult = ""
         
         if shouldOCR {
-            self.updateStatus("第 \(pageIndex) 页: 检测为扫描件图片，正在启动本地 Vision OCR 识别...")
+            // 需要跑 OCR 的逻辑 (模式 B 或 模式 C)
+            self.updateStatus("第 \(pageIndex) 页: 正在启用本地 Vision OCR 识别...")
             
-            if let image = renderPageToImage(page: page, watermarkSelections: eraseImageWatermark ? watermarkSelections : []) {
+            var maskSelections: [PDFSelection] = []
+            if resolvedMode == .modeB && enableWatermarkFilter {
+                // 模式 B：获取用于像素抹白的水印 Bounds 集合
+                for sel in allSelections {
+                    guard let text = sel.string else { continue }
+                    if isWatermark(text: text, filters: activeFilters, ignoreCase: ignoreCase) {
+                        maskSelections.append(sel)
+                    }
+                }
+            }
+            
+            // 物理抹白，如果无需抹白或模式 C，maskSelections 传入空即可
+            let coverSelections = eraseImageWatermark ? maskSelections : (resolvedMode == .modeB ? maskSelections : [])
+            
+            if let cgImage = renderPageToCGImage(page: page, watermarkSelections: coverSelections) {
                 let semaphore = DispatchSemaphore(value: 0)
                 var rawOCRText = ""
                 
-                performLocalOCR(on: image) { recognized in
+                performLocalOCR(on: cgImage) { recognized in
                     rawOCRText = recognized
                     semaphore.signal()
                 }
                 
-                // OCR 阻塞等待加上 60 秒限时，防止因系统异常导致后台线程永久死锁卡死
                 let waitResult = semaphore.wait(timeout: .now() + 60.0)
                 if waitResult == .timedOut {
                     self.updateStatus("⚠️ 第 \(pageIndex) 页: Vision OCR 执行超时（超过60秒），已跳过。")
                 } else {
-                    let cleanedOCRText = self.cleanText(rawOCRText, filters: watermarkFilters, ignoreCase: ignoreCase)
-                    pageResult = cleanedOCRText
-                    self.updateStatus("第 \(pageIndex) 页: OCR 识别并净化完成。")
+                    if resolvedMode == .modeC && enableWatermarkFilter {
+                        // 模式 C：OCR 识别出全部内容后，进行字符串净化后处理
+                        pageResult = self.cleanText(rawOCRText, filters: activeFilters, ignoreCase: ignoreCase)
+                    } else {
+                        pageResult = rawOCRText
+                    }
+                    self.updateStatus("第 \(pageIndex) 页: OCR 识别与去水印处理完成。")
                 }
             } else {
-                self.updateStatus("第 \(pageIndex) 页: 渲染页面图片失败，退回至提取文本。")
-                pageResult = normalTextPieces.joined(separator: "\n")
+                self.updateStatus("第 \(pageIndex) 页: 渲染页面物理图像失败。")
             }
         } else {
-            self.updateStatus("第 \(pageIndex) 页: 检测为包含可选中的活字正文，已直接提取并剔除活字水印。")
-            
-            var cleanedTextPieces: [String] = []
+            // 文字提取逻辑 (模式 A)
+            self.updateStatus("第 \(pageIndex) 页: 正在以纯文本模式提取正文...")
+            var normalTextPieces: [String] = []
             var lastWasEmpty = false
-            for piece in normalTextPieces {
-                let trimmed = piece.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            
+            for sel in allSelections {
+                guard let text = sel.string else { continue }
+                
+                // 模式 A 独享的严格完全匹配过滤，彻底防止 contains 包含匹配误杀正文
+                if enableWatermarkFilter && isWatermarkStrict(text: text, filters: activeFilters, ignoreCase: ignoreCase) {
+                    continue
+                }
+                
+                let trimmed = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 if trimmed.isEmpty {
                     if !lastWasEmpty {
-                        cleanedTextPieces.append("")
+                        normalTextPieces.append("")
                         lastWasEmpty = true
                     }
                 } else {
-                    cleanedTextPieces.append(piece)
+                    normalTextPieces.append(text)
                     lastWasEmpty = false
                 }
             }
-            pageResult = cleanedTextPieces.joined(separator: "\n")
+            pageResult = normalTextPieces.joined(separator: "\n")
+            self.updateStatus("第 \(pageIndex) 页: 文本过滤与提取完成。")
         }
         
         return pageResult
     }
     
+    /// 水印模糊包含比对 (适用于扫描件 OCR 物理擦除定位)
     private func isWatermark(text: String, filters: Set<String>, ignoreCase: Bool) -> Bool {
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanText.isEmpty { return false }
@@ -544,6 +596,23 @@ class PDFExtractorEngine: ObservableObject {
         return false
     }
     
+    /// 水印严格整行匹配判定 (模式 A 核心防误杀机制)
+    private func isWatermarkStrict(text: String, filters: Set<String>, ignoreCase: Bool) -> Bool {
+        let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanText.isEmpty { return false }
+        
+        let textToCompare = ignoreCase ? cleanText.lowercased() : cleanText
+        for filter in filters {
+            let filterToCompare = ignoreCase ? filter.lowercased() : filter
+            // 必须整行与水印匹配词完全相等，或者是长水印的前后截断相等，才作为水印抛弃，绝对不伤及正文
+            if textToCompare == filterToCompare {
+                return true
+            }
+        }
+        return false
+    }
+    
+    /// 水印清理
     private func cleanText(_ text: String, filters: Set<String>, ignoreCase: Bool) -> String {
         var cleaned = text
         for filter in filters {
@@ -584,7 +653,8 @@ class PDFExtractorEngine: ObservableObject {
         return result
     }
     
-    private func renderPageToImage(page: PDFPage, watermarkSelections: [PDFSelection]) -> NSImage? {
+    /// 高阶物理渲染：直接生成底层的 CGImage，极大地节省了 NSImage 包装的转码时延和内存泄露
+    private func renderPageToCGImage(page: PDFPage, watermarkSelections: [PDFSelection]) -> CGImage? {
         let pageBounds = page.bounds(for: .mediaBox)
         let scale: CGFloat = 3.0
         let width = pageBounds.width * scale
@@ -618,26 +688,21 @@ class PDFExtractorEngine: ObservableObject {
         
         page.draw(with: .mediaBox, to: context.cgContext)
         
+        // 模式 B：执行物理抹白遮盖
         NSColor.white.set()
         for selection in watermarkSelections {
             let bounds = selection.bounds(for: page)
+            // 微微向外扩张 1.5 pt，保证完全将可能包含抗锯齿边缘的笔画完全覆盖遮白
             let coverRect = bounds.insetBy(dx: -1.5, dy: -1.5)
             coverRect.fill()
         }
         
         NSGraphicsContext.restoreGraphicsState()
-        
-        let image = NSImage(size: NSSize(width: width, height: height))
-        image.addRepresentation(rep)
-        return image
+        return rep.cgImage
     }
     
-    private func performLocalOCR(on image: NSImage, completion: @escaping (String) -> Void) {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            completion("")
-            return
-        }
-        
+    /// 本地 Vision OCR 识别算法
+    private func performLocalOCR(on cgImage: CGImage, completion: @escaping (String) -> Void) {
         let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         
         let request = VNRecognizeTextRequest { (request, error) in

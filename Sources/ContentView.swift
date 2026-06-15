@@ -69,13 +69,17 @@ struct ContentView: View {
         }
     }
     
-    /// 键盘快捷键 ⌘R 开始提取逻辑 (直接从本地持久化的 AppStorage 里拉取用户设置)
+    /// 键盘快捷键 ⌘R 开始提取逻辑 (包含防并发机制与参数升级)
     private func startExtractionKeyboardAction() {
-        guard !engine.pdfFileName.isEmpty && !engine.isProcessing else { return }
+        guard !engine.pdfFileName.isEmpty && !engine.isProcessing && !aiEngine.isAIProcessing else { return }
         
         // 读取由 AppStorage 自动存在 UserDefaults 里的全局设置
         let modeRaw = UserDefaults.standard.string(forKey: "extractionMode") ?? ExtractionMode.smart.rawValue
         let mode = ExtractionMode(rawValue: modeRaw) ?? .smart
+        let watermarkRemovalModeRaw = UserDefaults.standard.string(forKey: "watermarkRemovalMode") ?? WatermarkRemovalMode.auto.rawValue
+        let watermarkRemovalMode = WatermarkRemovalMode(rawValue: watermarkRemovalModeRaw) ?? .auto
+        let enableWatermarkFilter = UserDefaults.standard.object(forKey: "enableWatermarkFilter") as? Bool ?? true
+        
         let ignoreCase = UserDefaults.standard.object(forKey: "ignoreCase") as? Bool ?? true
         let eraseImageWatermark = UserDefaults.standard.object(forKey: "eraseImageWatermark") as? Bool ?? false
         let pageRangeString = UserDefaults.standard.string(forKey: "pageRangeString") ?? ""
@@ -87,6 +91,8 @@ struct ContentView: View {
             customWatermarks: customWatermarks,
             ignoreCase: ignoreCase,
             mode: mode,
+            watermarkRemovalMode: watermarkRemovalMode,
+            enableWatermarkFilter: enableWatermarkFilter,
             eraseImageWatermark: eraseImageWatermark,
             pageRangeString: pageRangeString
         ) { result, url, mdUrl, avgTime in
