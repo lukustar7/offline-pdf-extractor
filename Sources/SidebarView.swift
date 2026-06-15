@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - 左侧控制侧边栏视图
+// MARK: - 左侧控制侧边栏视图 (macOS 原生 Form 风格)
 struct SidebarView: View {
     @ObservedObject var engine: PDFExtractorEngine
     @ObservedObject var aiEngine: AIProcessingEngine
@@ -35,38 +35,31 @@ struct SidebarView: View {
     @State private var isAIExpanded = true
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // 顶部标题与 App 品牌
-            HStack(spacing: 10) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(LinearGradient(colors: [.purple, .blue], startPoint: .leading, endPoint: .trailing))
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("PDF 本地去水印")
-                        .font(.system(size: 16, weight: .bold))
-                    Text("100% 离线文字提取与 AI 净化")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                }
+        VStack(spacing: 0) {
+            // macOS 侧边栏属性卡片顶部标题，使用标准 Source List Group Header 风格
+            HStack {
+                Text("提取与过滤设置")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.secondary)
+                Spacer()
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 24)
-            .padding(.bottom, 16)
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
             
             Divider()
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 12)
             
-            // 可滚动控制面板列表
+            // 纯净的 ScrollView + Form，完全采用 macOS 系统默认排版比例
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     
-                    // 1. 文件导入卡片
+                    // 1. 拖拽文件状态展示
                     if engine.pdfFileName.isEmpty {
                         DropZoneView(isDragOver: $dragOver) { url in
                             _ = engine.loadPDF(url: url)
                         }
-                        .padding(.top, 10)
+                        .padding(.top, 8)
                     } else {
                         FileInfoView(
                             name: engine.pdfFileName,
@@ -80,95 +73,60 @@ struct SidebarView: View {
                                 selectedTab = 0
                             }
                         )
-                        .padding(.top, 10)
+                        .padding(.top, 8)
                     }
                     
                     if !engine.pdfFileName.isEmpty {
-                        // 2. 提取配置
-                        VStack(alignment: .leading, spacing: 0) {
-                            Button(action: { withAnimation { isSettingsExpanded.toggle() } }) {
-                                HStack {
-                                    Text("提取设置")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Image(systemName: isSettingsExpanded ? "chevron.down" : "chevron.right")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding(.vertical, 8)
-                            }
-                            .buttonStyle(.plain)
-                            
-                            if isSettingsExpanded {
+                        Form {
+                            // 2. 提取参数设置
+                            DisclosureGroup(isExpanded: $isSettingsExpanded) {
                                 VStack(alignment: .leading, spacing: 10) {
-                                    // 提取模式单选
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text("提取通道")
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.secondary)
-                                        
-                                        Picker("", selection: $extractionMode) {
-                                            ForEach(ExtractionMode.allCases) { mode in
-                                                Text(mode.rawValue).tag(mode)
-                                            }
+                                    Picker("提取通道:", selection: $extractionMode) {
+                                        ForEach(ExtractionMode.allCases) { mode in
+                                            Text(mode.rawValue).tag(mode)
                                         }
-                                        .pickerStyle(.radioGroup)
-                                        .horizontalRadioLayout()
                                     }
+                                    .pickerStyle(.menu)
                                     
-                                    // 全局去水印识别总控开关
-                                    Toggle("开启水印过滤与像素擦除", isOn: $enableWatermarkFilter)
+                                    Toggle("启用水印过滤机制", isOn: $enableWatermarkFilter)
                                         .toggleStyle(.checkbox)
-                                        .font(.system(size: 11, weight: .semibold))
+                                        .font(.system(size: 11, weight: .medium))
                                     
                                     if enableWatermarkFilter {
-                                        // 专属去水印场景模式选择
                                         VStack(alignment: .leading, spacing: 4) {
-                                            Text("去水印工作模式:")
-                                                .font(.system(size: 10))
-                                                .foregroundColor(.secondary)
-                                            
-                                            Picker("", selection: $watermarkRemovalMode) {
+                                            Picker("去水印工作模式:", selection: $watermarkRemovalMode) {
                                                 ForEach(WatermarkRemovalMode.allCases) { mode in
                                                     Text(mode.rawValue).tag(mode)
                                                 }
                                             }
                                             .pickerStyle(.menu)
-                                            .labelsHidden()
                                             
-                                            // 针对三种具体情况的算法说明
+                                            // 模式简要功能提示，特别是第三个
                                             Group {
                                                 switch watermarkRemovalMode {
                                                 case .auto:
-                                                    Text("💡 [智能诊断] 系统将自动判断页面的文字与扫描图片比例，自动选择最佳去水印算法。")
+                                                    Text("💡 系统将智能检测文件类型并自动在 A/B/C 三种算法中派发。")
                                                 case .modeA:
-                                                    Text("💡 [模式 A] 正文和水印皆可选中。系统在提取时精准跳过水印节点，不跑 OCR，极速且 0 误杀。")
+                                                    Text("💡 纯文本去水印（文字版 PDF）。直接过滤倾斜的水印文本节点，不跑 OCR，极速且不伤正文。")
                                                 case .modeB:
-                                                    Text("💡 [模式 B] 正文是扫描图片且水印文字可选中。系统先对水印坐标进行像素抹白，再对干净页面进行 OCR 识别。")
+                                                    Text("💡 物理遮罩 + OCR（扫描件 + 文字水印）。先获取水印矢量坐标并用白色擦除，再对干净页面执行 OCR。")
                                                 case .modeC:
-                                                    Text("⚠️ [模式 C] 扫描件水印。正文和水印都已印在纸张上（不可选中）。系统将整体 OCR 后过滤字符。提示：若水印遮挡正文笔画，可能轻微影响重叠区域的 OCR 识别率，推荐配合“本地 AI 净化”以达到最佳效果。")
+                                                    Text("⚠️ OCR + 智能过滤（纯扫描件水印）。正文与水印均印在纸张上（不可选中）。系统将整体 OCR 后过滤字符。提示：若水印遮挡正文笔画，可能轻微影响重叠区域的识字率，推荐配合“本地 AI 净化”以达到最佳效果。")
                                                         .foregroundColor(.orange)
                                                 }
                                             }
                                             .font(.system(size: 9.5))
                                             .foregroundColor(.secondary)
-                                            .lineSpacing(2)
-                                            .padding(.top, 2)
+                                            .lineSpacing(2.5)
+                                            .padding(.leading, 8)
                                         }
                                         .transition(.opacity)
                                     }
                                     
-                                    // 页码范围选择
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text("指定提取页码范围 (如 1-5, 8, 10-12):")
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.secondary)
-                                        TextField("留空则提取全部页面", text: $pageRangeString)
-                                            .textFieldStyle(.roundedBorder)
-                                            .font(.system(size: 11))
-                                    }
-                                    .padding(.vertical, 2)
+                                    TextField("指定页码范围:", text: $pageRangeString)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.system(size: 11))
+                                        .help("留空则提取全部页面。支持格式：1-5, 8, 10-12")
                                     
                                     Toggle("忽略字母大小写", isOn: $ignoreCase)
                                         .toggleStyle(.checkbox)
@@ -177,39 +135,26 @@ struct SidebarView: View {
                                         Toggle("擦除图片中的水印区域", isOn: $eraseImageWatermark)
                                             .toggleStyle(.checkbox)
                                         
-                                        Text("💡 默认通过后处理技术无损净化水印。若水印字词严重重叠遮挡了文字识别，可开启上面选项进行像素擦除。")
+                                        Text("💡 开启该选项会在 OCR 前对水印覆盖的像素点进行强制白化处理，有效避免水印笔画干扰 OCR 引擎识字。")
                                             .font(.system(size: 9.5))
                                             .foregroundColor(.secondary)
                                             .lineSpacing(2)
+                                            .padding(.leading, 8)
                                     }
                                 }
-                                .padding(.top, 8)
-                                .padding(.bottom, 12)
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 4)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "slider.horizontal.3")
+                                    Text("提取配置")
+                                        .font(.system(size: 12, weight: .bold))
+                                }
                             }
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
-                        .cornerRadius(12)
-                        
-                        // 3. 水印管理
-                        if enableWatermarkFilter {
-                            VStack(alignment: .leading, spacing: 0) {
-                                Button(action: { withAnimation { isWatermarkExpanded.toggle() } }) {
-                                    HStack {
-                                        Text("活字水印过滤管理")
-                                            .font(.system(size: 12, weight: .bold))
-                                            .foregroundColor(.secondary)
-                                        Spacer()
-                                        Image(systemName: isWatermarkExpanded ? "chevron.down" : "chevron.right")
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.secondary)
-                                    }
-                                    .padding(.vertical, 8)
-                                }
-                                .buttonStyle(.plain)
-                                
-                                if isWatermarkExpanded {
+                            
+                            // 3. 水印管理
+                            if enableWatermarkFilter {
+                                DisclosureGroup(isExpanded: $isWatermarkExpanded) {
                                     VStack(alignment: .leading, spacing: 8) {
                                         if engine.watermarkCandidates.isEmpty {
                                             Text("未检测到高频活字水印。")
@@ -218,8 +163,9 @@ struct SidebarView: View {
                                                 .padding(.vertical, 4)
                                         } else {
                                             VStack(alignment: .leading, spacing: 4) {
-                                                Text("系统识别疑似水印")
-                                                    .font(.system(size: 11, weight: .bold))
+                                                Text("高频疑似水印词:")
+                                                    .font(.system(size: 10, weight: .semibold))
+                                                    .foregroundColor(.secondary)
                                                 Text("💡 以下词汇因在多页中重复出现，系统初步判定其为水印。如果其中包含正文字词，请取消勾选以防止误删。")
                                                     .font(.system(size: 9.5))
                                                     .foregroundColor(.secondary)
@@ -247,54 +193,37 @@ struct SidebarView: View {
                                         Divider()
                                             .padding(.vertical, 4)
                                         
-                                        Text("手动添加过滤词（逗号或换行隔开）:")
-                                            .font(.system(size: 10.5))
-                                            .foregroundColor(.secondary)
-                                        
-                                        TextEditor(text: $customWatermarks)
-                                            .font(.system(.body, design: .default))
-                                            .frame(height: 50)
-                                            .padding(4)
-                                            .background(Color(nsColor: .textBackgroundColor))
-                                            .cornerRadius(6)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                                            )
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("手动添加过滤词:")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.secondary)
+                                            
+                                            TextEditor(text: $customWatermarks)
+                                                .font(.system(.body, design: .default))
+                                                .frame(height: 50)
+                                                .padding(4)
+                                                .background(Color(nsColor: .textBackgroundColor))
+                                                .cornerRadius(6)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 6)
+                                                        .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+                                                )
+                                        }
                                     }
-                                    .padding(.top, 8)
-                                    .padding(.bottom, 12)
-                                }
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
-                            .cornerRadius(12)
-                            .transition(.opacity)
-                        }
-                        
-                        // 4. 本地 AI 推理设置
-                        VStack(alignment: .leading, spacing: 0) {
-                            Button(action: { withAnimation { isAIExpanded.toggle() } }) {
-                                HStack {
+                                    .padding(.vertical, 8)
+                                    .padding(.horizontal, 4)
+                                } label: {
                                     HStack(spacing: 6) {
-                                        Image(systemName: "cpu.fill")
-                                            .font(.system(size: 11))
-                                            .foregroundColor(.purple)
-                                        Text("本地 AI 净化助手")
+                                        Image(systemName: "tag")
+                                        Text("活字水印过滤管理")
                                             .font(.system(size: 12, weight: .bold))
-                                            .foregroundColor(.secondary)
                                     }
-                                    Spacer()
-                                    Image(systemName: isAIExpanded ? "chevron.down" : "chevron.right")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.secondary)
                                 }
-                                .padding(.vertical, 8)
+                                .transition(.opacity)
                             }
-                            .buttonStyle(.plain)
                             
-                            if isAIExpanded {
+                            // 4. 本地 AI 推理设置
+                            DisclosureGroup(isExpanded: $isAIExpanded) {
                                 VStack(alignment: .leading, spacing: 10) {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text("API 服务地址:")
@@ -359,7 +288,7 @@ struct SidebarView: View {
                                                 .textFieldStyle(.roundedBorder)
                                                 .disabled(aiEngine.isAIProcessing)
                                         } else {
-                                            Picker("选择模型", selection: $aiEngine.aiSelectedModel) {
+                                            Picker("", selection: $aiEngine.aiSelectedModel) {
                                                 ForEach(aiEngine.aiModels, id: \.self) { model in
                                                     Text(model).tag(model)
                                                 }
@@ -408,127 +337,23 @@ struct SidebarView: View {
                                             .padding(.top, 2)
                                     }
                                 }
-                                .padding(.top, 8)
-                                .padding(.bottom, 12)
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 4)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "cpu")
+                                    Text("本地 AI 净化助手")
+                                        .font(.system(size: 12, weight: .bold))
+                                }
                             }
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
-                        .cornerRadius(12)
+                        .padding(.horizontal, 2)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 12)
                 .padding(.bottom, 20)
             }
-            
-            Spacer()
-            
-            // 底部触发按钮
-            if !engine.pdfFileName.isEmpty && !engine.isProcessing {
-                VStack(spacing: 8) {
-                    Button(action: startExtractionAction) {
-                        HStack(spacing: 8) {
-                            if engine.isAnalyzingWatermarks {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .scaleEffect(0.8)
-                                    .brightness(0.5)
-                                Text("正在自动分析水印词...")
-                            } else {
-                                Text("开始提取文字")
-                            }
-                        }
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(
-                            engine.isAnalyzingWatermarks ?
-                            AnyShapeStyle(Color.gray.opacity(0.4)) :
-                            AnyShapeStyle(LinearGradient(colors: [.purple, .blue], startPoint: .leading, endPoint: .trailing))
-                        )
-                        .cornerRadius(8)
-                        .shadow(color: engine.isAnalyzingWatermarks ? Color.clear : Color.purple.opacity(0.2), radius: 6, x: 0, y: 3)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(aiEngine.isAIProcessing || engine.isAnalyzingWatermarks)
-                    
-                    if !resultText.isEmpty && !aiEngine.isAIProcessing {
-                        Button(action: startAIProcessingAction) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "sparkles")
-                                Text("发送至本地 AI 净化")
-                            }
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                            .background(
-                                LinearGradient(colors: [.purple, .pink], startPoint: .leading, endPoint: .trailing)
-                            )
-                            .cornerRadius(8)
-                            .shadow(color: Color.pink.opacity(0.25), radius: 5, x: 0, y: 2)
-                        }
-                        .buttonStyle(.plain)
-                        .transition(.opacity.combined(with: .scale))
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 24)
-            }
         }
-        .frame(width: 320) // 默认宽度限制，由外部 HSplitView 允许拖拽拉伸
-    }
-    
-    /// 开始文字提取核心逻辑
-    private func startExtractionAction() {
-        let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
-        engine.extractText(
-            activeWatermarks: active,
-            customWatermarks: customWatermarks,
-            ignoreCase: ignoreCase,
-            mode: extractionMode,
-            watermarkRemovalMode: watermarkRemovalMode,
-            enableWatermarkFilter: enableWatermarkFilter,
-            eraseImageWatermark: eraseImageWatermark,
-            pageRangeString: pageRangeString
-        ) { result, url, mdUrl, avgTime in
-            self.resultText = result
-            self.txtFileURL = url
-            self.mdFileURL = mdUrl
-            // 跳转至“原始提取文本”Tab (索引为 0)
-            withAnimation {
-                self.selectedTab = 0
-            }
-        }
-    }
-    
-    /// 发送给 AI 纠错净化
-    private func startAIProcessingAction() {
-        // 跳转至“AI 净化”Tab (索引为 1)
-        withAnimation {
-            self.selectedTab = 1
-        }
-        aiEngine.processTextWithAI(
-            inputText: resultText,
-            systemPrompt: systemPrompt,
-            fileURL: engine.pdfURL
-        )
-    }
-}
-
-// MARK: - SwiftUI RadioButton picker layout helper
-extension View {
-    func horizontalRadioLayout() -> some View {
-        self.modifier(HorizontalRadioStyleModifier())
-    }
-}
-
-struct HorizontalRadioStyleModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .labelsHidden()
-            .padding(.vertical, 4)
+        .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
     }
 }

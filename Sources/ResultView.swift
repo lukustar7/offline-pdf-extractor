@@ -53,10 +53,10 @@ struct ResultView: View {
                     
                     VStack(spacing: 8) {
                         Text(engine.currentStatus)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.primary)
                         
-                        Text("正在使用 Vision 本地引擎，请勿关闭应用")
+                        Text("正在调用本地 Vision 图像识别与去水印引擎...")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -67,20 +67,11 @@ struct ResultView: View {
                     }) {
                         HStack(spacing: 6) {
                             Image(systemName: "stop.circle")
-                            Text("取消提取")
+                            Text("停止任务")
                         }
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.red)
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 16)
-                        .background(Color.red.opacity(0.1))
-                        .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.red.opacity(0.3), lineWidth: 1)
-                        )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
                     
                     // 日志输出
                     ScrollView {
@@ -89,8 +80,8 @@ struct ResultView: View {
                             .foregroundColor(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(12)
-                            .background(Color(nsColor: .controlBackgroundColor))
-                            .cornerRadius(8)
+                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
+                            .cornerRadius(6)
                             .lineSpacing(4)
                     }
                     .frame(width: 500, height: 180)
@@ -106,34 +97,32 @@ struct ResultView: View {
                     // 左半部分：常驻原件 PDF 预览区 (P1 提取前后对比核心实现)
                     VStack(alignment: .leading, spacing: 0) {
                         HStack {
-                            Image(systemName: "eye.fill")
-                                .foregroundColor(.blue)
+                            Image(systemName: "eye")
+                                .foregroundColor(.secondary)
                             Text("PDF 原始页面对照")
-                                .font(.system(size: 12.5, weight: .bold))
-                                .foregroundColor(.primary)
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.secondary)
+                            Spacer()
                         }
-                        .padding(.horizontal, 24)
-                        .padding(.top, 20)
-                        .padding(.bottom, 12)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
                         
                         Divider()
-                            .padding(.horizontal, 24)
                         
                         if let doc = engine.pdfDocument {
                             PDFPreviewView(pdfDocument: doc)
                                 .background(Color(nsColor: .textBackgroundColor))
-                                .cornerRadius(8)
-                                .shadow(color: Color.black.opacity(0.02), radius: 5, x: 0, y: 2)
-                                .padding(.horizontal, 24)
-                                .padding(.vertical, 20)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
                         } else {
                             VStack {
                                 Spacer()
-                                Image(systemName: "doc.text.fill")
+                                Image(systemName: "doc.text")
                                     .font(.system(size: 48))
-                                    .foregroundColor(.secondary.opacity(0.5))
+                                    .foregroundColor(.secondary.opacity(0.3))
                                 Text("未检测到有效 PDF 原件")
-                                    .font(.system(size: 13))
+                                    .font(.system(size: 12))
                                     .foregroundColor(.secondary)
                                 Spacer()
                             }
@@ -144,318 +133,211 @@ struct ResultView: View {
                     
                     // 右半部分：去水印文本展示区
                     VStack(alignment: .leading, spacing: 0) {
-                        // 顶部自定义 TabBar 与 复制功能
+                        // 顶部辅助栏：选项切换与复制导出 (苹果 native 分栏顶栏设计)
                         HStack {
-                            HStack(spacing: 4) {
-                                Button(action: { selectedTab = 0 }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "doc.text")
-                                        Text("原始提取文本")
-                                    }
-                                    .font(.system(size: 12.5, weight: selectedTab == 0 ? .bold : .medium))
-                                    .padding(.vertical, 7)
-                                    .padding(.horizontal, 14)
-                                    .background(selectedTab == 0 ? Color.blue.opacity(0.15) : Color.clear)
-                                    .foregroundColor(selectedTab == 0 ? .blue : .primary)
-                                    .cornerRadius(6)
-                                }
-                                .buttonStyle(.plain)
-                                
-                                Button(action: { selectedTab = 1 }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "sparkles")
-                                        Text("本地 AI 纠错净化")
-                                    }
-                                    .font(.system(size: 12.5, weight: selectedTab == 1 ? .bold : .medium))
-                                    .padding(.vertical, 7)
-                                    .padding(.horizontal, 14)
-                                    .background(selectedTab == 1 ? Color.purple.opacity(0.15) : Color.clear)
-                                    .foregroundColor(selectedTab == 1 ? .purple : .primary)
-                                    .cornerRadius(6)
-                                }
-                                .buttonStyle(.plain)
+                            // 替换原先手绘 Tab 按钮，采用标准 Segmented Picker
+                            Picker("", selection: $selectedTab) {
+                                Text("原始文本").tag(0)
+                                Text("AI 净化").tag(1)
                             }
-                            .padding(3)
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(8)
+                            .pickerStyle(.segmented)
+                            .frame(width: 160)
                             
                             Spacer()
                             
-                            // 复制操作反馈动画
-                            HStack(spacing: 10) {
-                                if selectedTab == 0 {
-                                    Button(action: copyRawAction) {
+                            // 复制操作 (使用标准 bordered 扁平按键代替彩色卡片)
+                            if selectedTab == 0 {
+                                Button(action: copyRawAction) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: copiedRaw ? "checkmark" : "doc.on.doc")
+                                        Text(copiedRaw ? "已复制" : "复制")
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            } else if selectedTab == 1 {
+                                if !aiEngine.aiResultText.isEmpty {
+                                    Button(action: copyCleanAction) {
                                         HStack(spacing: 4) {
-                                            Image(systemName: copiedRaw ? "checkmark.circle.fill" : "doc.on.doc")
-                                            Text(copiedRaw ? "已复制 ✓" : "复制原始")
+                                            Image(systemName: copiedClean ? "checkmark" : "doc.on.doc")
+                                            Text(copiedClean ? "已复制" : "复制")
                                         }
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 6)
-                                        .background(copiedRaw ? Color.green.opacity(0.15) : Color.blue.opacity(0.1))
-                                        .foregroundColor(copiedRaw ? .green : .blue)
-                                        .cornerRadius(6)
                                     }
-                                    .buttonStyle(.plain)
-                                } else if selectedTab == 1 {
-                                    if !aiEngine.aiResultText.isEmpty {
-                                        Button(action: copyCleanAction) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: copiedClean ? "checkmark.circle.fill" : "doc.on.doc")
-                                                Text(copiedClean ? "已复制 ✓" : "复制净化文本")
-                                            }
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .background(copiedClean ? Color.green.opacity(0.15) : Color.purple.opacity(0.15))
-                                            .foregroundColor(copiedClean ? .green : .purple)
-                                            .cornerRadius(6)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
                                 }
                             }
                         }
-                        .padding(.horizontal, 24)
-                        .padding(.top, 20)
-                        .padding(.bottom, 12)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
                         
                         Divider()
-                            .padding(.horizontal, 24)
                         
-                        // Finder 直达 Banner
+                        // Finder 文件直达区：替换手绘弹窗卡片，升级为符合 HIG 的扁平式 Accessory Bar
                         if selectedTab == 0 {
                             if let url = txtFileURL, let mdUrl = mdFileURL {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundColor(.green)
-                                        .font(.system(size: 13, weight: .bold))
-                                    Text("🎉 提取已完成！已导出为: ")
-                                        .font(.system(size: 11.5))
-                                        .foregroundColor(.primary)
+                                HStack(spacing: 6) {
+                                    Image(systemName: "info.circle")
+                                        .foregroundColor(.secondary)
+                                    Text("提取成功！导出路径：")
+                                        .foregroundColor(.secondary)
                                     
                                     Button(action: {
                                         NSWorkspace.shared.activateFileViewerSelecting([url])
                                     }) {
-                                        HStack(spacing: 2) {
-                                            Image(systemName: "doc.text.fill")
-                                            Text(url.lastPathComponent)
-                                        }
-                                        .font(.system(size: 11.5, weight: .bold))
-                                        .foregroundColor(.green)
-                                        .underline()
+                                        Text(url.lastPathComponent)
+                                            .underline()
                                     }
-                                    .buttonStyle(.plain)
-                                    .help("点击在 Finder 中定位 TXT 文件")
+                                    .buttonStyle(.link)
+                                    .foregroundColor(.accentColor)
                                     
                                     Text("和")
-                                        .font(.system(size: 11))
                                         .foregroundColor(.secondary)
                                     
                                     Button(action: {
                                         NSWorkspace.shared.activateFileViewerSelecting([mdUrl])
                                     }) {
-                                        HStack(spacing: 2) {
-                                            Image(systemName: "arrow.down.doc.fill")
-                                            Text(mdUrl.lastPathComponent)
-                                        }
-                                        .font(.system(size: 11.5, weight: .bold))
-                                        .foregroundColor(.green)
-                                        .underline()
+                                        Text(mdUrl.lastPathComponent)
+                                            .underline()
                                     }
-                                    .buttonStyle(.plain)
-                                    .help("点击在 Finder 中定位 Markdown 文件")
+                                    .buttonStyle(.link)
+                                    .foregroundColor(.accentColor)
                                     
                                     Spacer()
                                 }
-                                .padding(.vertical, 9)
-                                .padding(.horizontal, 14)
-                                .background(Color.green.opacity(0.1))
-                                .cornerRadius(8)
+                                .font(.system(size: 11))
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 16)
+                                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.green.opacity(0.25), lineWidth: 1)
+                                    Rectangle()
+                                        .frame(height: 1)
+                                        .foregroundColor(Color(nsColor: .separatorColor)),
+                                    alignment: .bottom
                                 )
-                                .padding(.horizontal, 24)
-                                .padding(.top, 14)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
+                                .transition(.move(edge: .top).combined(with: .opacity))
                             }
                         } else if selectedTab == 1 {
                             if let url = aiEngine.aiTxtFileURL, let mdUrl = aiEngine.aiMdFileURL {
-                                HStack(spacing: 8) {
+                                HStack(spacing: 6) {
                                     Image(systemName: "sparkles")
                                         .foregroundColor(.purple)
-                                        .font(.system(size: 13, weight: .bold))
-                                    Text("✨ AI 优化已完成！已导出为: ")
-                                        .font(.system(size: 11.5))
-                                        .foregroundColor(.primary)
+                                    Text("AI 净化完毕！导出路径：")
+                                        .foregroundColor(.secondary)
                                     
                                     Button(action: {
                                         NSWorkspace.shared.activateFileViewerSelecting([url])
                                     }) {
-                                        HStack(spacing: 2) {
-                                            Image(systemName: "doc.text.fill")
-                                            Text(url.lastPathComponent)
-                                        }
-                                        .font(.system(size: 11.5, weight: .bold))
-                                        .foregroundColor(.purple)
-                                        .underline()
+                                        Text(url.lastPathComponent)
+                                            .underline()
                                     }
-                                    .buttonStyle(.plain)
-                                    .help("点击在 Finder 中定位 AI 净化 TXT 文件")
+                                    .buttonStyle(.link)
+                                    .foregroundColor(.purple)
                                     
                                     Text("和")
-                                        .font(.system(size: 11))
                                         .foregroundColor(.secondary)
                                     
                                     Button(action: {
                                         NSWorkspace.shared.activateFileViewerSelecting([mdUrl])
                                     }) {
-                                        HStack(spacing: 2) {
-                                            Image(systemName: "arrow.down.doc.fill")
-                                            Text(mdUrl.lastPathComponent)
-                                        }
-                                        .font(.system(size: 11.5, weight: .bold))
-                                        .foregroundColor(.purple)
-                                        .underline()
+                                        Text(mdUrl.lastPathComponent)
+                                            .underline()
                                     }
-                                    .buttonStyle(.plain)
-                                    .help("点击在 Finder 中定位 AI 净化 Markdown 文件")
+                                    .buttonStyle(.link)
+                                    .foregroundColor(.purple)
                                     
                                     Spacer()
                                 }
-                                .padding(.vertical, 9)
-                                .padding(.horizontal, 14)
-                                .background(Color.purple.opacity(0.1))
-                                .cornerRadius(8)
+                                .font(.system(size: 11))
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 16)
+                                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.purple.opacity(0.25), lineWidth: 1)
+                                    Rectangle()
+                                        .frame(height: 1)
+                                        .foregroundColor(Color(nsColor: .separatorColor)),
+                                    alignment: .bottom
                                 )
-                                .padding(.horizontal, 24)
-                                .padding(.top, 14)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
+                                .transition(.move(edge: .top).combined(with: .opacity))
                             }
                         }
                         
-                        // 文本内容展现
+                        // 文本展示区域，使用系统原生 TextEditor
                         if selectedTab == 0 {
-                            // 原始提取文本
                             TextEditor(text: previewTextBinding)
                                 .font(.system(.body, design: .default))
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
+                                .padding(12)
                                 .background(Color(nsColor: .textBackgroundColor))
-                                .cornerRadius(8)
-                                .shadow(color: Color.black.opacity(0.02), radius: 5, x: 0, y: 2)
-                                .padding(.horizontal, 24)
-                                .padding(.vertical, 20)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
                         } else {
                             // AI 净化文本
                             if !aiEngine.aiResultText.isEmpty {
                                 VStack(alignment: .leading, spacing: 0) {
-                                    // 推理流光横幅
+                                    // 顶层流式推理进度显示条，扁平嵌入，不遮挡
                                     if aiEngine.isAIProcessing {
                                         HStack(spacing: 8) {
                                             ProgressView()
                                                 .controlSize(.small)
-                                                .scaleEffect(0.7)
+                                                .scaleEffect(0.6)
                                             
-                                            Text("⚡️ AI 正在接力流式净化中：第 \(aiEngine.aiCurrentChunkIndex + 1) / \(aiEngine.aiTotalChunks) 段 (已完成并自动落盘 \(aiEngine.aiCurrentChunkIndex) 段)...")
-                                                .font(.system(size: 11.5, weight: .medium))
+                                            Text("⚡️ AI 正在处理：第 \(aiEngine.aiCurrentChunkIndex + 1) / \(aiEngine.aiTotalChunks) 段 (已完成 \(aiEngine.aiCurrentChunkIndex) 段)...")
+                                                .font(.system(size: 11, weight: .medium))
                                                 .foregroundColor(.purple)
                                             
                                             Spacer()
-                                            
-                                            Button(action: {
-                                                aiEngine.cancelAIProcessing()
-                                            }) {
-                                                Text("取消优化")
-                                                    .font(.system(size: 11, weight: .bold))
-                                                    .foregroundColor(.red)
-                                                    .underline()
-                                            }
-                                            .buttonStyle(.plain)
                                         }
-                                        .padding(.vertical, 9)
-                                        .padding(.horizontal, 14)
-                                        .background(Color.purple.opacity(0.1))
-                                        .cornerRadius(8)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .stroke(Color.purple.opacity(0.25), lineWidth: 1)
-                                        )
-                                        .padding(.horizontal, 24)
-                                        .padding(.top, 14)
+                                        .padding(.vertical, 5)
+                                        .padding(.horizontal, 16)
+                                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
                                         .transition(.opacity)
                                     }
                                     
                                     TextEditor(text: aiPreviewTextBinding)
                                         .font(.system(.body, design: .default))
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 8)
+                                        .padding(12)
                                         .background(Color(nsColor: .textBackgroundColor))
-                                        .cornerRadius(8)
-                                        .shadow(color: Color.black.opacity(0.02), radius: 5, x: 0, y: 2)
-                                        .padding(.horizontal, 24)
-                                        .padding(.vertical, 20)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 12)
                                 }
                             } else if aiEngine.isAIProcessing {
-                                // 加载模型状态
-                                VStack(spacing: 24) {
+                                // 初始化加载状态
+                                VStack(spacing: 16) {
                                     Spacer()
                                     ProgressView()
-                                        .controlSize(.large)
+                                        .controlSize(.regular)
                                     
-                                    VStack(spacing: 8) {
-                                        Text("正在连接本地模型并初始化首段...")
-                                            .font(.system(size: 14, weight: .semibold))
+                                    VStack(spacing: 6) {
+                                        Text("正在连接本地模型...")
+                                            .font(.system(size: 13, weight: .semibold))
                                         Text(aiEngine.aiProgressStatus)
                                             .font(.system(size: 11))
                                             .foregroundColor(.secondary)
                                             .multilineTextAlignment(.center)
                                             .padding(.horizontal, 40)
                                     }
-                                    
-                                    Button(action: {
-                                        aiEngine.cancelAIProcessing()
-                                    }) {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "xmark.circle")
-                                            Text("取消优化")
-                                        }
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(.red)
-                                        .padding(.vertical, 8)
-                                        .padding(.horizontal, 16)
-                                        .background(Color.red.opacity(0.1))
-                                        .cornerRadius(6)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .stroke(Color.red.opacity(0.3), lineWidth: 1)
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    
                                     Spacer()
                                 }
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                             } else {
-                                // 空白 AI 引导
-                                VStack(spacing: 16) {
+                                // 空白 AI 引导页，使用优雅的主题色渐变点缀
+                                VStack(spacing: 12) {
                                     Spacer()
                                     
                                     Image(systemName: "sparkles")
-                                        .font(.system(size: 48))
-                                        .foregroundStyle(LinearGradient(colors: [.purple, .pink], startPoint: .top, endPoint: .bottom))
+                                        .font(.system(size: 36))
+                                        .foregroundColor(.purple.opacity(0.8))
                                     
-                                    Text("本地 AI 文本净化")
-                                        .font(.system(size: 15, weight: .bold))
+                                    Text("本地 AI 文本排版与纠错")
+                                        .font(.system(size: 14, weight: .bold))
                                     
-                                    Text("本地 AI 可以智能修复 OCR 扫描产生的错别字，并合并因为换行生硬造成的生硬断行。\n所有的修改都会使用【大括号对】标出，确保可读可查。")
-                                        .font(.system(size: 11.5))
+                                    Text("本地 AI 可以修复 OCR 扫描识别产生的错别字，并根据上下文智能合并生硬的句末截断换行。\n所有的排版和字词修改都会用【大括号】在旁边标出，以供核实。")
+                                        .font(.system(size: 11))
                                         .foregroundColor(.secondary)
                                         .multilineTextAlignment(.center)
-                                        .lineSpacing(4)
-                                        .padding(.horizontal, 50)
+                                        .lineSpacing(4.5)
+                                        .padding(.horizontal, 60)
                                     
                                     Spacer()
                                 }
@@ -468,23 +350,24 @@ struct ResultView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // 3. 空白欢迎状态
-                VStack(spacing: 18) {
-                    Image(systemName: "doc.text.fill")
-                        .font(.system(size: 72))
-                        .foregroundStyle(LinearGradient(colors: [.gray.opacity(0.3), .gray.opacity(0.1)], startPoint: .top, endPoint: .bottom))
+                VStack(spacing: 16) {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 56))
+                        .foregroundColor(.secondary.opacity(0.25))
                     
-                    Text("暂无处理内容")
-                        .font(.system(size: 16, weight: .semibold))
+                    Text("暂无提取内容")
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.secondary)
                     
-                    Text("请在左侧导入 PDF 文件并完成水印配置")
-                        .font(.system(size: 12))
+                    Text("请在顶部工具栏导入 PDF，并在左侧面板中配置去水印词库")
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary.opacity(0.8))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
     
     private func copyRawAction() {

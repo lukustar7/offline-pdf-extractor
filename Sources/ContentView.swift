@@ -9,12 +9,12 @@ struct ContentView: View {
     @State private var txtFileURL: URL? = nil
     @State private var mdFileURL: URL? = nil
     
-    // selectedTab: 0 -> PDF 预览, 1 -> 原始提取文本, 2 -> 本地 AI 纠错净化
+    // selectedTab: 0 -> 原始提取文本, 1 -> 本地 AI 纠错净化
     @State private var selectedTab = 0
     
     var body: some View {
         HSplitView {
-            // 左侧控制区
+            // 左侧控制区 (Form 配置参数)
             SidebarView(
                 engine: engine,
                 aiEngine: aiEngine,
@@ -23,9 +23,10 @@ struct ContentView: View {
                 mdFileURL: $mdFileURL,
                 selectedTab: $selectedTab
             )
-            .frame(minWidth: 280, maxWidth: 500)
+            // 彻底移除固定 frame 宽，允许 macOS 原生 Split 拖拽拉伸
+            .frame(minWidth: 260, idealWidth: 300, maxWidth: 450)
             
-            // 右侧主展示区
+            // 右侧主展示对照区
             ResultView(
                 engine: engine,
                 aiEngine: aiEngine,
@@ -36,14 +37,80 @@ struct ContentView: View {
             )
             .frame(minWidth: 500, maxWidth: .infinity)
         }
-        .background(
-            LinearGradient(
-                colors: [Color(nsColor: .controlBackgroundColor), Color(nsColor: .windowBackgroundColor)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        // 挂载全局键盘快捷键组件 (利用隐藏按钮机制，不污染 UI 且符合原生 SwiftUI 设计)
+        .background(VisualEffectView(material: .windowBackground, blendingMode: .behindWindow))
+        // 挂载 macOS 官方推荐的顶级 Window 工具栏 (Toolbar)
+        .toolbar {
+            // 1. 折叠左侧栏的导航按钮
+            ToolbarItem(placement: .navigation) {
+                Button(action: toggleSidebar) {
+                    Image(systemName: "sidebar.left")
+                }
+                .help("显示或折叠左侧提取配置面板")
+            }
+            
+            // 2. 核心文件导入/关闭控制
+            ToolbarItem(placement: .primaryAction) {
+                if engine.pdfFileName.isEmpty {
+                    Button(action: openFileAction) {
+                        Label("导入 PDF", systemImage: "doc.badge.plus")
+                    }
+                    .help("导入 PDF 文件并自动分析 (⌘O)")
+                } else {
+                    Button(action: clearFileAction) {
+                        Label("关闭文件", systemImage: "xmark.circle")
+                    }
+                    .help("清除当前加载的文件及元数据")
+                }
+            }
+            
+            // 3. 核心提取/取消提取指令
+            if !engine.pdfFileName.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    if engine.isProcessing {
+                        Button(action: { engine.cancelPDFExtraction() }) {
+                            Label("停止提取", systemImage: "stop.circle")
+                                .foregroundColor(.red)
+                        }
+                        .help("中止当前的文本提取线程")
+                    } else {
+                        Button(action: startExtractionAction) {
+                            Label("提取文字", systemImage: "play.fill")
+                        }
+                        .disabled(aiEngine.isAIProcessing || engine.isAnalyzingWatermarks)
+                        .help("执行本地文字提取与去水印 (⌘R)")
+                    }
+                }
+            }
+            
+            // 4. AI 净化控制
+            if !resultText.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    if aiEngine.isAIProcessing {
+                        Button(action: { aiEngine.cancelAIProcessing() }) {
+                            Label("停止 AI", systemImage: "xmark.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                        .help("中止当前的本地 AI 净化校对")
+                    } else {
+                        Button(action: startAIProcessingAction) {
+                            Label("AI 净化", systemImage: "sparkles")
+                        }
+                        .help("发送已提取文本进行本地 AI 排版与纠错")
+                    }
+                }
+            }
+            
+            // 5. 快速在 Finder 中高亮物理文件
+            if let url = txtFileURL {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: { NSWorkspace.shared.activateFileViewerSelecting([url]) }) {
+                        Image(systemName: "folder")
+                    }
+                    .help("在 Finder 中打开并定位已生成的文本文件")
+                }
+            }
+        }
+        // 全局键盘快捷键组件
         .background(
             Group {
                 Button(action: openFileAction) { Text("") }
@@ -57,7 +124,12 @@ struct ContentView: View {
         )
     }
     
-    /// 键盘快捷键 ⌘O 打开 PDF 逻辑
+    /// 触发 macOS 系统原生的 NSSplitViewController 侧边栏折叠机制
+    private func toggleSidebar() {
+        NSApp.keyWindow?.firstResponder?.tryToPerform(#selector(NSSplitViewController.toggleSidebar(_:)), with: nil)
+    }
+    
+    /// 打开 PDF 逻辑
     private func openFileAction() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
@@ -69,23 +141,29 @@ struct ContentView: View {
         }
     }
     
-    /// 键盘快捷键 ⌘R 开始提取逻辑 (包含防并发机制与参数升级)
-    private func startExtractionKeyboardAction() {
-        guard !engine.pdfFileName.isEmpty && !engine.isProcessing && !aiEngine.isAIProcessing else { return }
+    /// 关闭文件与重置
+    private func clearFileAction() {
+        engine.clear()
+        resultText = ""
+        txtFileURL = nil
+        mdFileURL = nil
+        selectedTab = 0
+    }
+    
+    /// 开始提取文本
+    private func startExtractionAction() {
+        let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
+        let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
+        let ignoreCase = UserDefaults.standard.object(forKey: "ignoreCase") as? Bool ?? true
+        let eraseImageWatermark = UserDefaults.standard.object(forKey: "eraseImageWatermark") as? Bool ?? false
+        let pageRangeString = UserDefaults.standard.string(forKey: "pageRangeString") ?? ""
         
-        // 读取由 AppStorage 自动存在 UserDefaults 里的全局设置
         let modeRaw = UserDefaults.standard.string(forKey: "extractionMode") ?? ExtractionMode.smart.rawValue
         let mode = ExtractionMode(rawValue: modeRaw) ?? .smart
         let watermarkRemovalModeRaw = UserDefaults.standard.string(forKey: "watermarkRemovalMode") ?? WatermarkRemovalMode.auto.rawValue
         let watermarkRemovalMode = WatermarkRemovalMode(rawValue: watermarkRemovalModeRaw) ?? .auto
         let enableWatermarkFilter = UserDefaults.standard.object(forKey: "enableWatermarkFilter") as? Bool ?? true
         
-        let ignoreCase = UserDefaults.standard.object(forKey: "ignoreCase") as? Bool ?? true
-        let eraseImageWatermark = UserDefaults.standard.object(forKey: "eraseImageWatermark") as? Bool ?? false
-        let pageRangeString = UserDefaults.standard.string(forKey: "pageRangeString") ?? ""
-        let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
-        
-        let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
         engine.extractText(
             activeWatermarks: active,
             customWatermarks: customWatermarks,
@@ -100,8 +178,27 @@ struct ContentView: View {
             self.txtFileURL = url
             self.mdFileURL = mdUrl
             withAnimation {
-                self.selectedTab = 0 // 跳转至提取文本 Tab (0-indexed)
+                self.selectedTab = 0 // 跳转至提取文本 Tab
             }
         }
+    }
+    
+    /// 发送给 AI 纠错净化
+    private func startAIProcessingAction() {
+        withAnimation {
+            self.selectedTab = 1 // 跳转至 AI Tab
+        }
+        let systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
+        aiEngine.processTextWithAI(
+            inputText: resultText,
+            systemPrompt: systemPrompt,
+            fileURL: engine.pdfURL
+        )
+    }
+    
+    /// 快捷键 ⌘R 行为防冲突拦截
+    private func startExtractionKeyboardAction() {
+        guard !engine.pdfFileName.isEmpty && !engine.isProcessing && !aiEngine.isAIProcessing else { return }
+        startExtractionAction()
     }
 }
