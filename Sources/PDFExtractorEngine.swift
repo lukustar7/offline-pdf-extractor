@@ -701,34 +701,37 @@ class PDFExtractorEngine: ObservableObject {
         return rep.cgImage
     }
     
-    /// 本地 Vision OCR 识别算法
+    /// 本地 Vision OCR 识别算法 (并发指派，规避主提取队列死锁)
     private func performLocalOCR(on cgImage: CGImage, completion: @escaping (String) -> Void) {
-        let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        
-        let request = VNRecognizeTextRequest { (request, error) in
-            guard let observations = request.results as? [VNRecognizedTextObservation] else {
-                completion("")
-                return
+        // 将同步阻塞的 Vision perform 操作指派到系统后台全局并发队列，不占用 pdfQueue 串行提取队列的资源
+        DispatchQueue.global(qos: .userInitiated).async {
+            let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            
+            let request = VNRecognizeTextRequest { (request, error) in
+                guard let observations = request.results as? [VNRecognizedTextObservation] else {
+                    completion("")
+                    return
+                }
+                
+                var recognizedText = ""
+                for observation in observations {
+                    if let candidate = observation.topCandidates(1).first {
+                        recognizedText += candidate.string + "\n"
+                    }
+                }
+                completion(recognizedText)
             }
             
-            var recognizedText = ""
-            for observation in observations {
-                if let candidate = observation.topCandidates(1).first {
-                    recognizedText += candidate.string + "\n"
-                }
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = true
+            request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
+            
+            do {
+                try requestHandler.perform([request])
+            } catch {
+                print("Vision OCR 引擎执行失败: \(error)")
+                completion("")
             }
-            completion(recognizedText)
-        }
-        
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
-        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
-        
-        do {
-            try requestHandler.perform([request])
-        } catch {
-            print("Vision OCR 引擎执行失败: \(error)")
-            completion("")
         }
     }
 }

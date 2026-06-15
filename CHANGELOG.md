@@ -4,6 +4,12 @@
 
 本项目遵循 [语义化版本控制 (SemVer)](https://semver.org/spec/v2.0.0.html) 规范。
 
+## [1.7.1] - 2026-06-15
+
+### Fixed
+- **时序 Epoch Token 写盘隔离 (Critical)**：为 AI 净化及文件落盘逻辑引入了时序 Token (`currentAITokenSafe`)，在取消或重置时更新 UUID。所有排队的异步 I/O 闭包在执行前都会校验 Epoch Token。如不一致直接丢弃，彻底根除了前朝残留任务在提取重入时对新文件造成覆盖和污染的跨队列竞态隐患。
+- **Vision OCR 异步化与死锁防御 (Critical)**：将 `performLocalOCR` 内部的同步阻塞方法 `requestHandler.perform` 投递至系统后台全局并发队列 `DispatchQueue.global().async` 执行。使得提取串行队列 `pdfQueue` 不被其完全挂死，保障了 `semaphore.wait(timeout: 60.0)` 超时监测物理生效，使系统在 Vision 服务卡死时能够自愈跳过并正常响应。
+
 ## [1.7.0] - 2026-06-15
 
 ### Added

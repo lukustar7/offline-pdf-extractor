@@ -51,6 +51,22 @@ class AIProcessingEngine: ObservableObject {
     // 专职后台磁盘 I/O 串行队列，绝不阻塞主线程 UI
     private let ioQueue = DispatchQueue(label: "com.pdfextractor.ioqueue", qos: .background)
     
+    // === 线程安全 Epoch 时序 Token 锁结构 ===
+    private let aiTokenLock = NSLock()
+    private var _currentAIToken = UUID()
+    var currentAITokenSafe: UUID {
+        get {
+            aiTokenLock.lock()
+            defer { aiTokenLock.unlock() }
+            return _currentAIToken
+        }
+        set {
+            aiTokenLock.lock()
+            _currentAIToken = newValue
+            aiTokenLock.unlock()
+        }
+    }
+    
     // 模型列表解析结构
     struct AIModelResponse: Codable {
         let data: [AIModelData]
@@ -181,6 +197,9 @@ class AIProcessingEngine: ObservableObject {
         
         self.systemPromptBackup = systemPrompt
         
+        // 生成全新 Epoch Token，指示新一轮写入周期开始
+        currentAITokenSafe = UUID()
+        
         let chunks = splitTextIntoChunks(cleanInput, maxChars: 1800)
         self.pendingAIChunks = chunks
         self.aiTotalChunks = chunks.count
@@ -301,6 +320,9 @@ class AIProcessingEngine: ObservableObject {
     
     /// 中止 AI 文本润色进程
     func cancelAIProcessing() {
+        // 强制递增时序 Token。所有已经在 ioQueue 线程中排队挂起的写盘任务，其持有的旧 Token 均将失效
+        currentAITokenSafe = UUID()
+        
         // 主线程状态安全清理
         pendingAIChunks.removeAll()
         aiPendingOutputBuffer = ""
@@ -420,9 +442,13 @@ class AIProcessingEngine: ObservableObject {
         let aiMdURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("md")
         
         let finalResultText = aiResultText // 获取快照，安全传给子线程
+        let token = self.currentAITokenSafe // 捕获当前 Epoch
         
         ioQueue.async { [weak self] in
             guard let self = self else { return }
+            // 写入前安全比对 Epoch Token
+            guard self.currentAITokenSafe == token else { return }
+            
             do {
                 try finalResultText.write(to: aiTxtURL, atomically: true, encoding: .utf8)
                 
@@ -443,7 +469,7 @@ class AIProcessingEngine: ObservableObject {
         }
     }
     
-    /// 分片落盘：在每分片完成时在 ioQueue 中追加写盘，彻底规避主线程 IO
+    /// 分片落盘：在每分片完成时在 ioQueue 中追加写盘，彻底规避主线程 IO，应用 Epoch Token 隔离
     private func appendAIResultChunkToDisk(chunkContent: String, chunkIndex: Int) {
         guard let url = pdfURL, !chunkContent.isEmpty else { return }
         
@@ -451,8 +477,16 @@ class AIProcessingEngine: ObservableObject {
         let aiTxtURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("txt")
         let aiMdURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("md")
         
+        let token = self.currentAITokenSafe // 捕获当前 Epoch
+        
         ioQueue.async { [weak self] in
             guard let self = self else { return }
+            // 检查 Token 确定本任务在此 Epoch 周期内依然有效。若已取消重来，丢弃本次写入，防止前代数据污染新提取文档。
+            guard self.currentAITokenSafe == token else {
+                print("[AI写入提示] 丢弃前代残留分片的磁盘写入操作。")
+                return
+            }
+            
             do {
                 if chunkIndex == 0 {
                     try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
