@@ -3,7 +3,7 @@
 # 确保脚本发生任何错误时直接退出
 set -e
 
-echo "=== 开始编译并打包 macOS PDF去水印文字提取工具 (v1.5.1) ==="
+echo "=== 开始编译并打包 macOS PDF去水印文字提取工具 (v1.6.0) ==="
 
 # 1. 定义应用名称和目录结构
 APP_NAME="PDF文字提取"
@@ -61,7 +61,7 @@ fi
 echo "编译 Swift 源码 (main.swift) 中，请稍候..."
 SDK_PATH=$(xcrun --show-sdk-path --sdk macosx)
 
-swiftc -parse-as-library -O -sdk "${SDK_PATH}" main.swift -o PDFExtractor
+swiftc -parse-as-library -O -sdk "${SDK_PATH}" Sources/*.swift -o PDFExtractor
 
 echo "编译成功！生成可执行程序。"
 

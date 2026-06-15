@@ -1,0 +1,54 @@
+import SwiftUI
+
+// MARK: - 拖拽导入虚线框视图
+struct DropZoneView: View {
+    @Binding var isDragOver: Bool
+    var onFileDropped: (URL) -> Void
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "arrow.down.doc")
+                .font(.system(size: 36, weight: .light))
+                .foregroundColor(isDragOver ? .purple : .secondary)
+                .scaleEffect(isDragOver ? 1.15 : 1.0)
+                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isDragOver)
+            
+            VStack(spacing: 6) {
+                Text("拖入 PDF 文件到此区域")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("或者点击浏览文件")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 140)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isDragOver ? Color.purple : Color.gray.opacity(0.3), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, miterLimit: 10, dash: [6, 4], dashPhase: 0))
+                .background(isDragOver ? Color.purple.opacity(0.04) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            let panel = NSOpenPanel()
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories = false
+            panel.canChooseFiles = true
+            panel.allowedContentTypes = [.pdf]
+            if panel.runModal() == .OK, let url = panel.url {
+                onFileDropped(url)
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, error in
+                if let url = url, url.pathExtension.lowercased() == "pdf" {
+                    DispatchQueue.main.async {
+                        onFileDropped(url)
+                    }
+                }
+            }
+            return true
+        }
+    }
+}

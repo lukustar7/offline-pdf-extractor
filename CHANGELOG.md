@@ -4,6 +4,31 @@
 
 本项目遵循 [语义化版本控制 (SemVer)](https://semver.org/spec/v2.0.0.html) 规范。
 
+## [1.6.0] - 2026-06-15
+
+### Added
+- **PDF 原生预览面板 (P0)**：右侧新增“PDF 预览”Tab。通过 `PDFPreviewView` (基于 PDFKit 的 `PDFView`) 原生渲染 PDF，支持双指缩放、自适应大小和滚动，方便用户直观对比文字提取效果。
+- **提取页码范围选择 (P1)**：在提取设置中新增页码范围输入框（支持 `1-5, 8, 10-12` 等语法格式）。解析为 1-indexed 数组后仅提取该范围页，为长文档处理节省了大量等待时间。
+- **本地常用 OCR 错别字纠错词库 (P2)**：内置高频 OCR 识别错别字映射字典（如将“面且”->“而且”，“我门”->“我们”等），在非 AI 模式提取完成后自动做二次匹配修正，提高基础文本的可读性。
+- **预计剩余时间 (ETA) 动态显示 (P2)**：在文字提取进度环下方新增 ETA 预计剩余时间（如“预计约剩 1 分 15 秒”）。根据已处理页数和平均单页处理时间在主线程动态更新，消除用户长文档提取的焦虑感。
+- **键盘快捷键支持 (P2)**：支持窗口级别的键盘快捷键。`⌘O` 快速弹出选择框导入文件，`⌘R` 在加载文件后快速触发提取文字，提供原生 macOS Desktop App 操控体验。
+- **可拖拽侧边栏宽度设计**：引入 `HSplitView` 弹性布局，允许用户拖动调整左侧控制面板的宽度（280pt - 500pt 限制），解决固定 400pt 在小屏 Mac 笔记本上挤占空间的问题。
+- **复制操作“已复制 ✓”反馈动画**：为“复制原始”和“复制净化文本”按钮增加短暂的复制状态提醒。点击后按钮样式自动变为绿色并提示“已复制 ✓”，2 秒后淡出恢复，提供直观的交互成功反馈。
+- **用户参数及 AI 设置持久化 (@AppStorage)**：对提取模式、忽略大小写、擦除图片水印、页码范围、自定义水印词、本地 AI 端点、默认模型、排版系统提示词等关键设置做 AppStorage/UserDefaults 持久化，防止应用重启后参数丢失。
+
+### Changed
+- **单体巨石文件解耦重构**：将 2010 行的 `main.swift` 单体代码重构拆分为 `Sources/` 目录下的 11 个高内聚、扁平化的 Swift 文件。对应调整 `build.sh` 进行多文件编译编译，提升了项目的长期可维护性。
+- **深色模式恢复为自适应系统主题**：移除了 `.environment(\.colorScheme, .dark)` 对深色模式的强制锁死，支持 macOS 浅色和深色外观的自动切换。
+- **窗口标准标题栏恢复**：移除了 `.windowStyle(.hiddenTitleBar)`，使红黄绿交通灯按钮正常显现，方便用户拖动移动窗口或快速缩放。
+
+### Fixed
+- **多线程 PDFKit 访问崩溃隐患 (Critical)**：主线程和后台提取线程实现了 PDFKit 实例物理隔离。后台提取与 OCR 渲染采用单独加载的 `PDFDocument(url: url)` 实例，彻底规避了多线程并发读写 PDFKit 导致 EXC_BAD_ACCESS 闪退的严重 Bug。
+- **@Published 属性跨线程写入 Bug (Critical)**：对 `isCancelled`、`currentExtractToken` 等跨线程通信状态添加了 `NSLock` 锁物理保护，提供线程安全的 `isCancelledSafe` 属性；所有对 `@Published` 属性的写入与 UI 更新均显式分发到 `DispatchQueue.main.async` 执行，彻底消除运行时 Main Thread Checker 警告和闪退隐患。
+- **Ollama/LM Studio 流式 UI 更新节流 (Throttle)**：实现 100ms 字符接收缓冲区降频合并写入 UI 逻辑，将 SSE 流的界面刷新频次压缩了 90% 以上，解决了 TextEditor 频繁重绘带来的严重 UI 卡顿和 CPU 空转问题。
+- **Vision OCR 信号量死锁隐患**：将 OCR 异步回调阻塞的 `semaphore.wait(timeout: .distantFuture)` 替换为 `timeout: .now() + 60.0` 限时等待，若超时则输出错误日志并自动处理下一页，防止程序因系统 Vision 故障永久锁死在后台。
+- **FileInfoView SF Symbol 图标空白修复**：将不存在的 `"doc.red"` 图标名称更正为有效的 `"doc.fill"`，使文件卡片中的文档图标正常显示。
+- **“提取模式”单选组标签隐藏 Bug 修复**：通过将 Picker 的 `"提取模式"` 外置显式渲染在单选组上方，解决 `HorizontalRadioStyleModifier` 里的 `labelsHidden` 将其含义完全抹除导致用户不知道单选组功能的问题。
+
 ## [1.5.1] - 2026-06-11
 
 ### Fixed
