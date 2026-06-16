@@ -11,11 +11,11 @@ struct FileInfoView: View {
     @State private var showConfirm = false
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             HStack {
                 Image(systemName: "doc.fill")
                     .font(.system(size: 24))
-                    .foregroundColor(.purple)
+                    .foregroundColor(.accentColor)
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
@@ -51,12 +51,12 @@ struct FileInfoView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(Theme.Spacing.md)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.purple.opacity(0.2), lineWidth: 1)
+                .stroke(Color.accentColor.opacity(0.2), lineWidth: 1)
         )
         // 卡片整体无障碍适配 (P3-7 修复)
         .accessibilityElement(children: .combine)

@@ -181,7 +181,7 @@ struct ContentView: View {
             self.txtFileURL = url
             self.mdFileURL = mdUrl
             withAnimation {
-                self.selectedTab = 0 // 跳转至提取文本 Tab
+                self.selectedTab = 1 // 跳转至提取文本 Tab (由 0 改为 1)
             }
         }
     }
@@ -189,7 +189,7 @@ struct ContentView: View {
     /// 发送给 AI 纠错净化
     private func startAIProcessingAction() {
         withAnimation {
-            self.selectedTab = 1 // 跳转至 AI Tab
+            self.selectedTab = 2 // 跳转至 AI Tab (由 1 改为 2)
         }
         let systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
         aiEngine.processTextWithAI(

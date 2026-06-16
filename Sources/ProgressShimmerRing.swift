@@ -6,24 +6,24 @@ struct ProgressShimmerRing: View {
     let etaText: String
     
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: Theme.Spacing.lg) {
             ZStack {
                 // 背景圆环
                 Circle()
                     .stroke(Color.gray.opacity(0.15), lineWidth: 10)
                 
-                // 进度条（带渐变）
+                // 进度条（带渐变，改用系统主强调色与蓝色的渐变，将紫色留给 AI 净化部分）
                 Circle()
                     .trim(from: 0.0, to: CGFloat(min(progress, 1.0)))
                     .stroke(
-                        LinearGradient(colors: [.purple, .blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        LinearGradient(colors: [.accentColor, .blue, .accentColor], startPoint: .topLeading, endPoint: .bottomTrailing),
                         style: StrokeStyle(lineWidth: 10, lineCap: .round)
                     )
                     .rotationEffect(Angle(degrees: -90))
                     .animation(.linear(duration: 0.2), value: progress)
                 
                 // 进度百分比文本
-                VStack(spacing: 4) {
+                VStack(spacing: Theme.Spacing.xs) {
                     Text("\(Int(progress * 100))%")
                         .font(.system(size: 24, weight: .black, design: .rounded))
                         .foregroundColor(.primary)
@@ -34,11 +34,11 @@ struct ProgressShimmerRing: View {
             }
             .frame(width: 120, height: 120)
             
-            // ETA 文本回显
+            // ETA 预计剩余时间文本回显，使用系统主色调
             if !etaText.isEmpty {
                 Text(etaText)
                     .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundColor(.purple)
+                    .foregroundColor(.accentColor)
                     .transition(.opacity)
             }
         }

@@ -4,6 +4,18 @@
 
 本项目遵循 [语义化版本控制 (SemVer)](https://semver.org/spec/v2.0.0.html) 规范。
 
+## [1.8.3] - 2026-06-16
+
+### Changed
+- **右侧对照区 Tab 化，移除嵌套 HSplitView (UX 优化)**：废除了 ResultView 内部的嵌套 `HSplitView` 及其多余分割线，将“PDF 原件”、“提取文本”与“AI 净化”融为一个统一的 3 状态 Tab 页面。极大拓展了单个页面的可视宽度，在小屏设备上显著提升了阅读体验。
+- **左侧控制面板 Tab 化 (UX 优化)**：将 SidebarView 拆分为“提取设置”和“AI 设置”两个 Tab。非 AI 处理时默认隐藏 AI 配置的视觉噪音；当后台 AI 处理运行时，Tab 标题会追加呼吸指示标志（“AI 设置 ●”）以便实时感知状态。
+- **限制紫色色调滥用**：收敛了原先各处乱用的紫色。将文件信息图标、加载卡片边框、拖放区激活高亮、进度环渐变及 ETA 文本的主色调由紫色改为系统默认强调色（`Color.accentColor`），仅在 AI 推理相关的流程和视图中保留紫色，增强视觉层次。
+- **重构间距并接入 Theme.Spacing 设计系统**：新建 `Theme.Spacing` 间距体系，替换了侧边栏、结果区、辅助栏等 View 文件中所有硬编码的 Padding 数值，提升界面布局严整度。
+
+### Added
+- **封装公共 AccessoryBarView 组件**：提取并封装了用于 Finder 物理文件高亮定位的 `AccessoryBarView` 模块，消除了 ResultView 中原本重复的两段冗余布局代码，提高了代码的可维护性。
+- **界面状态过渡动画**：在 ResultView 的 3 种基础状态（提取中进度、内容展示区、欢迎空白页）切换时，全面引入 `withAnimation` 和 `.transition(.opacity)` 渐变过渡动画，消除状态瞬切的生硬感。
+
 ## [1.8.2] - 2026-06-15
 
 ### Fixed

@@ -7,14 +7,14 @@ struct DropZoneView: View {
     var onInvalidFileDropped: (() -> Void)? = nil // 拖入非 PDF 时的错误回调 (P1-5 修复)
     
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: Theme.Spacing.lg) {
             Image(systemName: "arrow.down.doc")
                 .font(.system(size: 36, weight: .light))
-                .foregroundColor(isDragOver ? .purple : .secondary)
+                .foregroundColor(isDragOver ? .accentColor : .secondary)
                 .scaleEffect(isDragOver ? 1.15 : 1.0)
                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isDragOver)
             
-            VStack(spacing: 6) {
+            VStack(spacing: Theme.Spacing.xs) {
                 Text("拖入 PDF 文件到此区域")
                     .font(.system(size: 13, weight: .semibold))
                 Text("或者点击浏览文件")
@@ -26,8 +26,8 @@ struct DropZoneView: View {
         .frame(height: 140)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(isDragOver ? Color.purple : Color.gray.opacity(0.3), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, miterLimit: 10, dash: [6, 4], dashPhase: 0))
-                .background(isDragOver ? Color.purple.opacity(0.04) : Color.clear)
+                .stroke(isDragOver ? Color.accentColor : Color.gray.opacity(0.3), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, miterLimit: 10, dash: [6, 4], dashPhase: 0))
+                .background(isDragOver ? Color.accentColor.opacity(0.04) : Color.clear)
         )
         .contentShape(Rectangle())
         .onTapGesture {
