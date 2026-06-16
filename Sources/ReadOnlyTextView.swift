@@ -18,6 +18,17 @@ struct ReadOnlyTextView: NSViewRepresentable {
             textView.isAutomaticQuoteSubstitutionEnabled = false
             textView.isAutomaticDashSubstitutionEnabled = false
             textView.isAutomaticTextReplacementEnabled = false
+            
+            // 关键修复：启用纵向自适应并禁止横向自适应，让排版强制触发自动折行 (解决行尾大空白)
+            textView.isVerticallyResizable = true
+            textView.isHorizontallyResizable = false
+            textView.autoresizingMask = [.width]
+            
+            // 绑定 TextContainer 的宽度自适应，使其充满 ScrollView 并实时追踪 TextView 宽度变动
+            if let textContainer = textView.textContainer {
+                textContainer.widthTracksTextView = true
+                textContainer.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+            }
         }
         return scrollView
     }

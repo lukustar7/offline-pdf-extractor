@@ -53,11 +53,11 @@ struct ResultView: View {
                     
                     VStack(spacing: Theme.Spacing.sm) {
                         Text(engine.currentStatus)
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(.body, design: .default).weight(.semibold))
                             .foregroundColor(.primary)
                         
                         Text("正在调用本地 Vision 图像识别与去水印引擎...")
-                            .font(.system(size: 11))
+                            .font(.system(.caption2))
                             .foregroundColor(.secondary)
                     }
                     
@@ -151,10 +151,10 @@ struct ResultView: View {
                                 VStack {
                                     Spacer()
                                     Image(systemName: "doc.text")
-                                        .font(.system(size: 48))
+                                        .font(.system(.largeTitle))
                                         .foregroundColor(.secondary.opacity(0.3))
                                     Text("未检测到有效 PDF 原件")
-                                        .font(.system(size: 12))
+                                        .font(.system(.subheadline))
                                         .foregroundColor(.secondary)
                                     Spacer()
                                 }
@@ -210,7 +210,7 @@ struct ResultView: View {
                                                 .scaleEffect(0.6)
                                             
                                             Text("⚡️ AI 正在处理：第 \(aiEngine.aiCurrentChunkIndex + 1) / \(aiEngine.aiTotalChunks) 段 (已完成 \(aiEngine.aiCurrentChunkIndex) 段)...")
-                                                .font(.system(size: 11, weight: .medium))
+                                                .font(.system(.caption, design: .default).weight(.medium))
                                                 .foregroundColor(.purple)
                                             
                                             Spacer()
@@ -234,9 +234,9 @@ struct ResultView: View {
                                     
                                     VStack(spacing: 6) {
                                         Text("正在连接本地模型...")
-                                            .font(.system(size: 13, weight: .semibold))
+                                            .font(.system(.body, design: .default).weight(.semibold))
                                         Text(aiEngine.aiProgressStatus)
-                                            .font(.system(size: 11))
+                                            .font(.system(.caption2))
                                             .foregroundColor(.secondary)
                                             .multilineTextAlignment(.center)
                                             .padding(.horizontal, Theme.Spacing.xxl)

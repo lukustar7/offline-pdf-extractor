@@ -112,17 +112,18 @@ struct ContentView: View {
                 }
             }
         }
-        // 挂载加载错误弹窗 (P2-6 修复)
-        .alert("加载 PDF 失败", isPresented: Binding<Bool>(
-            get: { engine.errorMessage != nil },
-            set: { show in if !show { engine.errorMessage = nil } }
-        )) {
-            Button("确定") {
-                engine.errorMessage = nil
+        // 核心差距 A 修复：挂载通知中心监听器，响应来自系统菜单栏（Menu Bar Commands）的触发，保障键盘工作流
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenFileNotification"))) { _ in
+            openFileAction()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StartExtractionNotification"))) { _ in
+            if !engine.pdfFileName.isEmpty && !engine.isProcessing && !aiEngine.isAIProcessing && !engine.isAnalyzingWatermarks {
+                startExtractionAction()
             }
-        } message: {
-            if let message = engine.errorMessage {
-                Text(message)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StartAINotification"))) { _ in
+            if !resultText.isEmpty && !aiEngine.isAIProcessing && !engine.isProcessing {
+                startAIProcessingAction()
             }
         }
     }

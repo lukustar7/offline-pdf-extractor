@@ -21,7 +21,7 @@ struct SidebarView: View {
     @AppStorage("systemPrompt") private var systemPrompt = """
 你是一个极为严谨的文本排版与错别字纠正助手。你将接收一段由 OCR 引擎从扫描件中识别出的原始文本。
 请执行以下处理：
-1. 保持原文的主体段落结构和逻辑含义完全不变，切勿重写、扩写或精简正文内容。
+1. 保持原文的主体段落结构 and 逻辑含义完全不变，切勿重写、扩写或精简正文内容。
 2. 修复文本中由于 OCR 识别误差导致的可能错字、别字（例如把“而且”识别为“面且”，把“我们”识别为“我门”）。
 3. 智能修复不合理的强行换行：只智能合并由于 OCR 扫描在行尾造成的生硬硬断行（本应是一句话但断开了）。【核心铁律】：严禁将原本属于不同自然段、有空行分隔或语义独立的换行强行合并为一行。必须严格保留原文中所有的自然段落结构！
 4. 【核心铁律】：每当你在排版、硬换行、字词上修改了任何内容，你必须在修改后的内容旁边，紧随其后附上大括号，格式为：“【识别是：[原始错误/硬换行]，修改为：[修改后/合并内容]】”。
@@ -42,7 +42,8 @@ struct SidebarView: View {
             // macOS 侧边栏属性卡片顶部标题，使用标准 Source List Group Header 风格
             HStack {
                 Text("配置控制面板")
-                    .font(.system(size: 11, weight: .bold))
+                    // 核心差距 B 修复：替换硬编码字号，采用系统级语义化字体样式以支持 Dynamic Type 动态缩放
+                    .font(.system(.caption, design: .default).weight(.bold))
                     .foregroundColor(.secondary)
                 Spacer()
             }
@@ -50,7 +51,7 @@ struct SidebarView: View {
             .padding(.top, Theme.Spacing.lg)
             .padding(.bottom, Theme.Spacing.sm)
             
-            // 优化 2: 拆分左侧 Sidebar 为“提取设置”和“AI 设置”两个 Tab 页
+            // 拆分左侧 Sidebar 为“提取设置”和“AI 设置”两个 Tab 页
             Picker("", selection: $activeSidebarTab) {
                 Text("提取设置").tag(0)
                 // 若 AI 正在后台工作，显示提示标记以便用户感知
@@ -66,6 +67,47 @@ struct SidebarView: View {
             // 纯净的 ScrollView + VStack 纵向对齐
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                    
+                    // 核心差距 E 修复：Inline 警告条代替阻断性 Alert 模态弹窗，避免打断用户的流畅操作流
+                    if let error = engine.errorMessage {
+                        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+                            Image(systemName: "exclamationmark.octagon.fill")
+                                .foregroundColor(.red)
+                                .font(.system(.body))
+                            
+                            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                Text("加载 PDF 失败")
+                                    .font(.system(.caption, design: .default).weight(.bold))
+                                    .foregroundColor(.red)
+                                Text(error)
+                                    .font(.system(.caption2))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(3)
+                            }
+                            
+                            Spacer()
+                            
+                            Button(action: {
+                                withAnimation {
+                                    engine.errorMessage = nil
+                                }
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("清除错误信息")
+                        }
+                        .padding(Theme.Spacing.md)
+                        .background(Color.red.opacity(0.08))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.red.opacity(0.15), lineWidth: 1)
+                        )
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .padding(.top, Theme.Spacing.sm)
+                    }
                     
                     if activeSidebarTab == 0 {
                         // ==================== 提取设置面板 ====================
@@ -108,7 +150,7 @@ struct SidebarView: View {
                                         // 提取通道 (标签在上，控件在下，宽度 100%)
                                         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                                             Text("提取通道")
-                                                .font(.system(size: 10, weight: .medium))
+                                                .font(.system(.caption2, design: .default).weight(.medium))
                                                 .foregroundColor(.secondary)
                                             
                                             Picker("", selection: $extractionMode) {
@@ -119,18 +161,20 @@ struct SidebarView: View {
                                             .pickerStyle(.menu)
                                             .labelsHidden()
                                             .frame(maxWidth: .infinity)
+                                            // 核心差距 C 修复：为隐藏了 Label 的表单控件增加 Accessibility 无障碍标签描述
+                                            .accessibilityLabel("文本提取通道选择器")
                                         }
                                         
                                         // 全局去水印开关
                                         Toggle("启用水印过滤与像素擦除", isOn: $enableWatermarkFilter)
                                             .toggleStyle(.checkbox)
-                                            .font(.system(size: 11, weight: .semibold))
+                                            .font(.system(.subheadline).weight(.semibold))
                                         
                                         if enableWatermarkFilter {
                                             // 专属去水印模式
                                             VStack(alignment: .leading, spacing: 6) {
                                                 Text("去水印工作模式")
-                                                    .font(.system(size: 10, weight: .medium))
+                                                    .font(.system(.caption2, design: .default).weight(.medium))
                                                     .foregroundColor(.secondary)
                                                 
                                                 Picker("", selection: $watermarkRemovalMode) {
@@ -141,6 +185,7 @@ struct SidebarView: View {
                                                 .pickerStyle(.menu)
                                                 .labelsHidden()
                                                 .frame(maxWidth: .infinity)
+                                                .accessibilityLabel("去水印工作模式选择器")
                                                 
                                                 // 模式简要说明气泡框
                                                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
@@ -156,7 +201,7 @@ struct SidebarView: View {
                                                             .foregroundColor(.orange)
                                                     }
                                                 }
-                                                .font(.system(size: 9.5))
+                                                .font(.system(.caption2))
                                                 .foregroundColor(.secondary)
                                                 .lineSpacing(3)
                                                 .padding(Theme.Spacing.sm)
@@ -169,12 +214,15 @@ struct SidebarView: View {
                                         // 页码范围
                                         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                                             Text("指定提取页码范围 (如 1-5, 8, 10-12)")
-                                                .font(.system(size: 10, weight: .medium))
+                                                .font(.system(.caption2, design: .default).weight(.medium))
                                                 .foregroundColor(.secondary)
                                             
                                             TextField("留空则提取全部页面", text: $pageRangeString)
                                                 .textFieldStyle(.roundedBorder)
-                                                .font(.system(size: 11))
+                                                .font(.subheadline)
+                                                // 核心差距 C 修复：为没有标题的输入框增加 Accessibility 说明
+                                                .accessibilityLabel("页码提取范围输入框")
+                                                .accessibilityHint("输入例如 1-5，8 指定要处理的页码范围。留空代表提取全部")
                                         }
                                         
                                         Toggle("忽略字母大小写", isOn: $ignoreCase)
@@ -186,7 +234,7 @@ struct SidebarView: View {
                                                     .toggleStyle(.checkbox)
                                                 
                                                 Text("💡 开启该选项会在 OCR 前对水印覆盖的像素点进行强制白化处理，有效避免水印干扰识字。")
-                                                    .font(.system(size: 9))
+                                                    .font(.system(.caption2))
                                                     .foregroundColor(.secondary)
                                                     .lineSpacing(2)
                                             }
@@ -196,7 +244,7 @@ struct SidebarView: View {
                                     .padding(.vertical, Theme.Spacing.sm)
                                 } label: {
                                     Label("提取配置", systemImage: "slider.horizontal.3")
-                                        .font(.system(size: 12, weight: .bold))
+                                        .font(.system(.body, design: .default).weight(.bold))
                                         .foregroundColor(.primary)
                                 }
                                 
@@ -209,16 +257,16 @@ struct SidebarView: View {
                                         VStack(alignment: .leading, spacing: 10) {
                                             if engine.watermarkCandidates.isEmpty {
                                                 Text("未检测到高频活字水印。")
-                                                    .font(.system(size: 11))
+                                                    .font(.subheadline)
                                                     .foregroundColor(.secondary)
                                                     .padding(.vertical, Theme.Spacing.xs)
                                             } else {
                                                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                                                     Text("高频疑似水印词:")
-                                                        .font(.system(size: 10, weight: .semibold))
+                                                        .font(.system(.caption, design: .default).weight(.semibold))
                                                         .foregroundColor(.secondary)
                                                     Text("💡 以下词汇因在多页中重复出现，系统初步判定其为水印。如果其中包含正文字词，请取消勾选以防止误删。")
-                                                        .font(.system(size: 9.5))
+                                                        .font(.system(.caption2))
                                                         .foregroundColor(.secondary)
                                                         .lineSpacing(2)
                                                 }
@@ -229,11 +277,11 @@ struct SidebarView: View {
                                                     Toggle(isOn: $candidate.isSelected) {
                                                         HStack {
                                                             Text(candidate.text)
-                                                                .font(.system(size: 11, weight: .medium))
+                                                                .font(.system(.body).weight(.medium))
                                                                 .lineLimit(1)
                                                             Spacer()
                                                             Text("\(candidate.occurrenceCount) 页")
-                                                                .font(.system(size: 10))
+                                                                .font(.system(.caption2))
                                                                 .foregroundColor(.secondary)
                                                         }
                                                     }
@@ -246,7 +294,7 @@ struct SidebarView: View {
                                             
                                             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                                                 Text("手动添加过滤词 (逗号或换行隔开):")
-                                                    .font(.system(size: 10, weight: .medium))
+                                                    .font(.system(.caption2, design: .default).weight(.medium))
                                                     .foregroundColor(.secondary)
                                                 
                                                 TextEditor(text: $customWatermarks)
@@ -259,13 +307,14 @@ struct SidebarView: View {
                                                         RoundedRectangle(cornerRadius: 6)
                                                             .stroke(Color.gray.opacity(0.15), lineWidth: 1)
                                                     )
+                                                    .accessibilityLabel("手动添加过滤词编辑框")
                                             }
                                         }
                                         .padding(.leading, Theme.Spacing.md)
                                         .padding(.vertical, Theme.Spacing.sm)
                                     } label: {
                                         Label("活字水印过滤管理", systemImage: "tag")
-                                            .font(.system(size: 12, weight: .bold))
+                                            .font(.system(.body, design: .default).weight(.bold))
                                             .foregroundColor(.primary)
                                     }
                                     .transition(.opacity)
@@ -281,7 +330,7 @@ struct SidebarView: View {
                                 // API 地址
                                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                                     Text("API 服务地址")
-                                        .font(.system(size: 10, weight: .medium))
+                                        .font(.system(.caption2, design: .default).weight(.medium))
                                         .foregroundColor(.secondary)
                                     
                                     TextField("http://localhost:11434/v1", text: $aiEngine.aiApiBaseUrl)
@@ -290,14 +339,16 @@ struct SidebarView: View {
                                         .onChangeCompatible(of: aiEngine.aiApiBaseUrl) { newValue in
                                             aiEngine.checkURLSafety(urlString: newValue)
                                         }
+                                        .accessibilityLabel("AI 服务端点 URL 输入框")
+                                        .accessibilityHint("配置兼容 OpenAI 规范的本地 AI 服务地址，例如 Ollama 或 LM Studio 的端点")
                                     
                                     if aiEngine.isExternalURLWarning {
                                         HStack(alignment: .top, spacing: Theme.Spacing.xs) {
                                             Image(systemName: "exclamationmark.triangle.fill")
                                                 .foregroundColor(.red)
-                                                .font(.system(size: 10))
+                                                .font(.system(.caption2))
                                             Text("⚠️ 警示：配置了外部公网 API 地址，您的数据存在泄露风险！")
-                                                .font(.system(size: 9))
+                                                .font(.system(.caption2))
                                                 .foregroundColor(.red)
                                                 .lineLimit(2)
                                                 .lineSpacing(2)
@@ -329,7 +380,7 @@ struct SidebarView: View {
                                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                                     HStack {
                                         Text("AI 模型名称")
-                                            .font(.system(size: 10, weight: .medium))
+                                            .font(.system(.caption2, design: .default).weight(.medium))
                                             .foregroundColor(.secondary)
                                         Spacer()
                                         if aiEngine.isAIFetchingModels {
@@ -343,6 +394,7 @@ struct SidebarView: View {
                                         TextField("如 qwen2.5-7b-instruct", text: $aiEngine.aiSelectedModel)
                                             .textFieldStyle(.roundedBorder)
                                             .disabled(aiEngine.isAIProcessing)
+                                            .accessibilityLabel("AI 模型名称文本框")
                                     } else {
                                         Picker("", selection: $aiEngine.aiSelectedModel) {
                                             ForEach(aiEngine.aiModels, id: \.self) { model in
@@ -353,6 +405,7 @@ struct SidebarView: View {
                                         .labelsHidden()
                                         .disabled(aiEngine.isAIProcessing)
                                         .frame(maxWidth: .infinity)
+                                        .accessibilityLabel("AI 模型选择器")
                                     }
                                     
                                     Button(action: {
@@ -372,10 +425,10 @@ struct SidebarView: View {
                                 // 提示词
                                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                                     Text("排版与纠错系统提示词")
-                                        .font(.system(size: 10, weight: .medium))
+                                        .font(.system(.caption2, design: .default).weight(.medium))
                                         .foregroundColor(.secondary)
                                     TextEditor(text: $systemPrompt)
-                                        .font(.system(size: 9.5))
+                                        .font(.system(.caption2))
                                         .frame(height: 120)
                                         .padding(3)
                                         .background(Color(nsColor: .textBackgroundColor))
@@ -385,12 +438,14 @@ struct SidebarView: View {
                                                 .stroke(Color.gray.opacity(0.15), lineWidth: 1)
                                         )
                                         .disabled(aiEngine.isAIProcessing)
+                                        .accessibilityLabel("AI 净化系统提示词编辑框")
+                                        .accessibilityHint("配置发送给模型的 Prompt，用于指导如何排版纠错")
                                 }
                                 
                                 // 后台处理中的实时进度状态提示，此处保留 AI 专属紫色
                                 if !aiEngine.aiProgressStatus.isEmpty {
                                     Text(aiEngine.aiProgressStatus)
-                                        .font(.system(size: 10, weight: .medium))
+                                        .font(.system(.caption2, design: .default).weight(.medium))
                                         .foregroundColor(.purple)
                                         .lineLimit(2)
                                         .padding(.top, 2)
@@ -400,7 +455,7 @@ struct SidebarView: View {
                             .padding(.vertical, Theme.Spacing.sm)
                         } label: {
                             Label("本地 AI 净化助手", systemImage: "cpu")
-                                .font(.system(size: 12, weight: .bold))
+                                .font(.system(.body, design: .default).weight(.bold))
                                 .foregroundColor(.primary)
                         }
                     }
