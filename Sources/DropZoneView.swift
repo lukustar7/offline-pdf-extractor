@@ -6,6 +6,9 @@ struct DropZoneView: View {
     var onFileDropped: (URL) -> Void
     var onInvalidFileDropped: (() -> Void)? = nil // 拖入非 PDF 时的错误回调 (P1-5 修复)
     
+    // 适配最新 macOS 设计语言：卡片悬停气垫弹簧形变状态
+    @State private var isHovered = false
+    
     var body: some View {
         VStack(spacing: Theme.Spacing.lg) {
             Image(systemName: "arrow.down.doc")
@@ -62,5 +65,13 @@ struct DropZoneView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("PDF 拖放导入区域")
         .accessibilityHint("将 PDF 格式的文件拖拽到此区域，或点击此区域浏览并导入文件")
+        // macOS 最新设计语言：鼠标悬停产生气垫弹性放大与投影反馈，手感极佳
+        .onHover { hovering in
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) {
+                isHovered = hovering
+            }
+        }
+        .scaleEffect(isHovered ? 1.02 : 1.0)
+        .shadow(color: Color.black.opacity(isHovered ? 0.06 : 0.0), radius: 10, x: 0, y: 5)
     }
 }

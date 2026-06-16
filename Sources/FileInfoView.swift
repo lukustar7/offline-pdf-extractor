@@ -10,6 +10,9 @@ struct FileInfoView: View {
     // 弹窗二次确认状态，防止用户误触清空所有提取元数据 (P3-5 修复)
     @State private var showConfirm = false
     
+    // 适配最新 macOS 设计语言：卡片悬停气垫弹簧形变状态
+    @State private var isHovered = false
+    
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             HStack {
@@ -62,5 +65,13 @@ struct FileInfoView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("已加载的 PDF 文件：\(name)")
         .accessibilityValue("文件大小 \(size)，总计 \(pages) 页")
+        // macOS 最新设计语言：鼠标悬停产生气垫弹性放大与投影反馈，增加微动效手感
+        .onHover { hovering in
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) {
+                isHovered = hovering
+            }
+        }
+        .scaleEffect(isHovered ? 1.02 : 1.0)
+        .shadow(color: Color.black.opacity(isHovered ? 0.06 : 0.0), radius: 10, x: 0, y: 5)
     }
 }

@@ -74,12 +74,23 @@ struct ContentView: View {
                         }
                         .help("中止当前的文本提取线程")
                     } else {
-                        Button(action: startExtractionAction) {
-                            Label("提取文字", systemImage: "play.fill")
+                        // macOS 最新设计语言：在按钮点击/触发提取时增加弹性物理弹跳动画反馈 (Symbol Effects)
+                        if #available(macOS 14.0, *) {
+                            Button(action: startExtractionAction) {
+                                Label("提取文字", systemImage: "play.fill")
+                            }
+                            .symbolEffect(.bounce, value: engine.isProcessing)
+                            .disabled(aiEngine.isAIProcessing || engine.isAnalyzingWatermarks)
+                            .keyboardShortcut("r", modifiers: .command)
+                            .help("执行本地文字提取与去水印 (⌘R)")
+                        } else {
+                            Button(action: startExtractionAction) {
+                                Label("提取文字", systemImage: "play.fill")
+                            }
+                            .disabled(aiEngine.isAIProcessing || engine.isAnalyzingWatermarks)
+                            .keyboardShortcut("r", modifiers: .command)
+                            .help("执行本地文字提取与去水印 (⌘R)")
                         }
-                        .disabled(aiEngine.isAIProcessing || engine.isAnalyzingWatermarks)
-                        .keyboardShortcut("r", modifiers: .command) // 直接在可见按钮上绑定快捷键 (P3-8 修复)
-                        .help("执行本地文字提取与去水印 (⌘R)")
                     }
                 }
             }
@@ -94,10 +105,19 @@ struct ContentView: View {
                         }
                         .help("中止当前的本地 AI 净化校对")
                     } else {
-                        Button(action: startAIProcessingAction) {
-                            Label("AI 净化", systemImage: "sparkles")
+                        // macOS 最新设计语言：在 AI 净化触发时增加 sparkles 图标弹性弹跳效果，极具灵动感
+                        if #available(macOS 14.0, *) {
+                            Button(action: startAIProcessingAction) {
+                                Label("AI 净化", systemImage: "sparkles")
+                            }
+                            .symbolEffect(.bounce, value: aiEngine.isAIProcessing)
+                            .help("发送已提取文本进行本地 AI 排版与纠错")
+                        } else {
+                            Button(action: startAIProcessingAction) {
+                                Label("AI 净化", systemImage: "sparkles")
+                            }
+                            .help("发送已提取文本进行本地 AI 排版与纠错")
                         }
-                        .help("发送已提取文本进行本地 AI 排版与纠错")
                     }
                 }
             }
