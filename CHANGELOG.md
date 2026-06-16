@@ -13,6 +13,7 @@
 - **重构间距并接入 Theme.Spacing 设计系统**：新建 `Theme.Spacing` 间距体系，替换了侧边栏、结果区、辅助栏等 View 文件中所有硬编码的 Padding 数值，提升界面布局严整度。
 
 ### Added
+- **引入 Liquid Glass (液态玻璃) 新纪元设计语言**：新建了 `LiquidGlassContainer` 与拟物化玻璃水滴图标底座 `LiquidGlassIconBase`。将应用中两个最重要的空白交互区（未导入文件的“欢迎空白页”与未进行 AI 处理的“AI 空白引导页”）全量升级为液态玻璃艺术风格。包含超圆角多色流体渐变背景、高折射率厚玻璃双层描边质感以及毛玻璃悬浮拟物投影，带来极具未来感与苹果 26 系系统审美的一流视觉体验。
 - **封装公共 AccessoryBarView 组件**：提取并封装了用于 Finder 物理文件高亮定位的 `AccessoryBarView` 模块，消除了 ResultView 中原本重复的两段冗余布局代码，提高了代码的可维护性。
 - **界面状态过渡动画**：在 ResultView 的 3 种基础状态（提取中进度、内容展示区、欢迎空白页）切换时，全面引入 `withAnimation` 和 `.transition(.opacity)` 渐变过渡动画，消除状态瞬切的生硬感。
 

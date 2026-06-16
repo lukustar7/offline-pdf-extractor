@@ -166,7 +166,7 @@ struct ResultView: View {
                     } else if selectedTab == 1 {
                         // 提取文本 Tab
                         VStack(alignment: .leading, spacing: 0) {
-                            // 优化 4: 挂载公共导出的 Accessory Bar
+                            // 挂载公共导出的 Accessory Bar
                             if let url = txtFileURL, let mdUrl = mdFileURL {
                                 AccessoryBarView(
                                     iconName: "info.circle",
@@ -245,27 +245,26 @@ struct ResultView: View {
                                 }
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                             } else {
-                                // 空白 AI 引导页，使用紫色体现 AI 特性
-                                VStack(spacing: Theme.Spacing.md) {
-                                    Spacer()
-                                    
-                                    Image(systemName: "sparkles")
-                                        .font(.system(size: 36))
-                                        .foregroundColor(.purple.opacity(0.8))
-                                    
-                                    Text("本地 AI 文本排版与纠错")
-                                        .font(.system(size: 14, weight: .bold))
-                                    
-                                    Text("本地 AI 可以修复 OCR 扫描识别产生的错别字，并根据上下文智能合并生硬的句末截断换行。\n所有的排版和字词修改都会用【大括号】在旁边标出，以供核实。")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                        .multilineTextAlignment(.center)
-                                        .lineSpacing(4.5)
-                                        .padding(.horizontal, Theme.Spacing.xxxl)
-                                    
-                                    Spacer()
+                                // 升级为极具科技感的 Liquid Glass (液态玻璃) 风格 AI 引导页
+                                LiquidGlassContainer {
+                                    VStack(spacing: Theme.Spacing.lg) {
+                                        // 拟物化玻璃水滴图标底座 (AI 专属紫色)
+                                        LiquidGlassIconBase(iconName: "sparkles", usePurpleTheme: true)
+                                            .padding(.bottom, Theme.Spacing.md)
+                                        
+                                        Text("本地 AI 文本排版与纠错")
+                                            .font(.system(.title3, design: .rounded).weight(.bold))
+                                            .foregroundColor(.primary)
+                                        
+                                        Text("本地 AI 可以修复 OCR 扫描识别产生的错别字，并根据上下文智能合并生硬的句末截断换行。\n所有的排版和字词修改都会用【大括号】在旁边标出，以供核实。")
+                                            .font(.system(.footnote))
+                                            .foregroundColor(.secondary)
+                                            .multilineTextAlignment(.center)
+                                            .lineSpacing(5)
+                                            .frame(maxWidth: 420)
+                                    }
                                 }
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .transition(.opacity)
                             }
                         }
                         .transition(.opacity)
@@ -275,21 +274,25 @@ struct ResultView: View {
                 .transition(.opacity)
                 
             } else {
-                // ==================== 3. 空白欢迎状态 ====================
-                VStack(spacing: Theme.Spacing.lg) {
-                    Image(systemName: "doc.text")
-                        .font(.system(size: 56))
-                        .foregroundColor(.secondary.opacity(0.25))
-                    
-                    Text("暂无提取内容")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.secondary)
-                    
-                    Text("请在顶部工具栏导入 PDF，并在左侧面板中配置去水印词库")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary.opacity(0.8))
+                // ==================== 3. 升级为 Liquid Glass 风格的空白欢迎状态 ====================
+                LiquidGlassContainer {
+                    VStack(spacing: Theme.Spacing.lg) {
+                        // 拟物化玻璃水滴图标底座 (常规提取使用系统强调色)
+                        LiquidGlassIconBase(iconName: "doc.text", usePurpleTheme: false)
+                            .padding(.bottom, Theme.Spacing.md)
+                        
+                        Text("暂无提取内容")
+                            .font(.system(.title3, design: .rounded).weight(.bold))
+                            .foregroundColor(.primary)
+                        
+                        Text("请在顶部工具栏导入 PDF，并在左侧控制面板进行分析提取。\n系统将自动剔除高频疑似水印，并为您自动导出 TXT 和精美排版的 Markdown 文件。")
+                            .font(.system(.footnote))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(5)
+                            .frame(maxWidth: 400)
+                    }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(.opacity)
             }
         }
