@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF 离线文字提取与去水印净化助手 - 概念演示</title>
+    <!-- 引入 Google Fonts 现代字体 Outfit 和 Inter 提升视觉质感 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- 引入精美的 CSS 样式表 -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- 1. 背景流体渐变光晕容器：模拟 Apple Vision Pro / macOS 动态壁纸 -->
+    <div class="fluid-background">
+        <div class="glow-orb orb-1"></div>
+        <div class="glow-orb orb-2"></div>
+        <div class="glow-orb orb-3"></div>
+    </div>
+
+    <!-- 2. 主应用程序窗口：基于磨砂玻璃（Glassmorphism）与高光边缘 -->
+    <div class="app-window" id="appWindow">
+        
+        <!-- 3. macOS 经典顶部标题工具栏 (Toolbar) -->
+        <header class="window-toolbar">
+            <!-- 左侧三色控制圆点 -->
+            <div class="window-controls">
+                <span class="dot close-dot" title="关闭"></span>
+                <span class="dot minimize-dot" title="最小化"></span>
+                <span class="dot expand-dot" title="全屏"></span>
+            </div>
+            
+            <!-- 中间标题与连接状态 -->
+            <div class="window-title">
+                <span class="title-text">PDF 离线文字提取与去水印净化助手</span>
+                <span class="badge offline-badge">
+                    <span class="pulse-green"></span>
+                    100% 本地运行
+                </span>
+            </div>
+            
+            <!-- 右侧核心功能动作条 (Actions) -->
+            <div class="toolbar-actions">
+                <button class="toolbar-btn" id="btnImport" title="导入 PDF 文件 (⌘O)">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+                    <span>导入 PDF</span>
+                </button>
+                <button class="toolbar-btn hidden" id="btnClear" title="清除当前文件">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                    <span>关闭文件</span>
+                </button>
+                <button class="toolbar-btn action-primary hidden" id="btnExtract" title="执行本地去水印与文字提取 (⌘R)">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                    <span>提取文字</span>
+                </button>
+                <button class="toolbar-btn action-ai hidden" id="btnAIPurify" title="发送给本地 AI 进行纠错和格式排版">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M12 2L9 9 2 12l7 3 3 7 3-7 7-3-7-3z"/></svg>
+                    <span>AI 智能净化</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- 4. 双栏主内容交互区 (HSplitView) -->
+        <main class="window-body">
+            
+            <!-- 左侧控制侧边栏 (SidebarView) -->
+            <aside class="sidebar-panel">
+                <div class="sidebar-header">
+                    <h3>配置控制面板</h3>
+                </div>
+                
+                <!-- 侧边栏 Segmented Control Tab 切换 -->
+                <div class="segmented-control">
+                    <button class="segment-btn active" data-tab="tab-extract">提取设置</button>
+                    <button class="segment-btn" data-tab="tab-ai">
+                        AI 设置 <span class="ai-status-dot green"></span>
+                    </button>
+                </div>
+                
+                <div class="sidebar-scrollable">
+                    <!-- 警告提示条：可动态隐藏/显示，采用非阻断卡片设计 -->
+                    <div class="alert-banner hidden" id="errorBanner">
+                        <div class="alert-icon">⚠️</div>
+                        <div class="alert-content">
+                            <h4 id="errorTitle">错误</h4>
+                            <p id="errorMessage">错误信息</p>
+                        </div>
+                        <button class="alert-close" id="btnCloseAlert">×</button>
+                    </div>
+
+                    <!-- 提取设置面板 -->
+                    <div class="tab-content active" id="tab-extract">
+                        <!-- 第一组：模式选择卡片 -->
+                        <div class="config-group">
+                            <label class="group-title">提取通道</label>
+                            <div class="card-radio-group">
+                                <label class="card-radio">
+                                    <input type="radio" name="extractMode" value="smart" checked>
+                                    <div class="card-radio-box">
+                                        <div class="card-radio-title">智能提取双通道</div>
+                                        <div class="card-radio-desc">文字版直接解析，扫描件/图片自动调起高精度本地 Vision OCR。</div>
+                                    </div>
+                                </label>
+                                <label class="card-radio">
+                                    <input type="radio" name="extractMode" value="ocr">
+                                    <div class="card-radio-box">
+                                        <div class="card-radio-title">强制本地 OCR 提取</div>
+                                        <div class="card-radio-desc">对所有页面进行高精度图像文本识别，适合文字版但包含大量图形的 PDF。</div>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- 第二组：去水印核心配置 -->
+                        <div class="config-group">
+                            <div class="group-title-with-switch">
+                                <label class="group-title">去水印净化</label>
+                                <label class="ios-switch">
+                                    <input type="checkbox" id="enableWatermarkFilter" checked>
+                                    <span class="switch-slider"></span>
+                                </label>
+                            </div>
+                            
+                            <div class="group-suboptions" id="watermarkSubOptions">
+                                <div class="switch-row">
+                                    <span>忽略大小写</span>
+                                    <label class="ios-switch">
+                                        <input type="checkbox" id="ignoreCase" checked>
+                                        <span class="switch-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="switch-row">
+                                    <span>细粒度物理字符擦除 (扫描版)</span>
+                                    <label class="ios-switch">
+                                        <input type="checkbox" id="eraseImageWatermark">
+                                        <span class="switch-slider"></span>
+                                    </label>
+                                </div>
+
+                                <!-- 水印分析推荐区域 -->
+                                <div class="watermark-analysis-card hidden" id="analysisCard">
+                                    <div class="card-header">
+                                        <span class="card-title">🔍 智能扫描推荐水印</span>
+                                        <span class="pulse-blue-dot"></span>
+                                    </div>
+                                    <p class="card-desc">自动扫描 PDF 前几页发现以下高频重复字词，可能为背景水印，点击可一键添加：</p>
+                                    <div class="tag-cloud" id="recommendedTags">
+                                        <!-- 动态生成水印推荐标签 -->
+                                    </div>
+                                </div>
+
+                                <div class="input-field-group">
+                                    <label for="customWatermarks">去水印过滤词 (逗号或换行分隔)</label>
+                                    <textarea id="customWatermarks" placeholder="例如：禁止复制, 绝密机密, 内部材料"></textarea>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 第三组：范围配置 -->
+                        <div class="config-group">
+                            <label class="group-title">提取页码范围</label>
+                            <div class="input-field-group">
+                                <input type="text" id="pageRange" placeholder="全部 (例如：1-5, 8, 11-15)">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- AI 设置面板 -->
+                    <div class="tab-content" id="tab-ai">
+                        <!-- 本地模型服务端配置 -->
+                        <div class="config-group">
+                            <label class="group-title">本地 AI 运行端点</label>
+                            <div class="select-wrapper">
+                                <select id="aiEndpoint">
+                                    <option value="ollama">Ollama (默认: localhost:11434)</option>
+                                    <option value="lmstudio">LM Studio (默认: localhost:1234)</option>
+                                </select>
+                            </div>
+                            
+                            <div class="endpoint-status-card">
+                                <div class="status-indicator">
+                                    <span class="pulse-green"></span>
+                                    <span>连接就绪：发现可用本地模型</span>
+                                </div>
+                                <div class="select-wrapper mt-sm">
+                                    <select id="aiModel">
+                                        <option value="qwen2:7b">qwen2:7b (推荐本地中文模型)</option>
+                                        <option value="llama3:8b">llama3:8b (Meta 本地精简版)</option>
+                                        <option value="mistral:7b">mistral:7b (高效率文本修正)</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 系统 Prompt 配置 -->
+                        <div class="config-group">
+                            <label class="group-title">纠错与排版 Prompt</label>
+                            <div class="input-field-group">
+                                <textarea id="systemPrompt" rows="12"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- 右侧主展示对照区 (ResultView) -->
+            <section class="result-panel">
+                
+                <!-- 情况 A：未导入文件时的空状态拖拽区 -->
+                <div class="empty-state" id="emptyState">
+                    <div class="drop-zone" id="dropZone">
+                        <div class="drop-illustration">
+                            <svg class="bounce-icon" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+                        </div>
+                        <h2>将 PDF 文件拖放到此处</h2>
+                        <p>支持 100% 离线 Vision 引擎解析，绝对隐私安全</p>
+                        <button class="btn-select-file" id="btnSelectFile">选择本地文件</button>
+                        <button class="btn-demo-file" id="btnUseDemo">使用内置示例演示</button>
+                    </div>
+                </div>
+
+                <!-- 情况 B：已导入文件时的双栏展示对比区 -->
+                <div class="workspace-area hidden" id="workspaceArea">
+                    <!-- 文件元数据摘要卡片 -->
+                    <div class="file-summary-bar">
+                        <div class="file-info">
+                            <svg class="file-icon" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm-2 16c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+                            <div class="file-meta">
+                                <span class="file-name" id="metaFileName">document.pdf</span>
+                                <span class="file-details" id="metaFileDetails">准备就绪 • 共 4 页 • 1.2 MB</span>
+                            </div>
+                        </div>
+                        <div class="progress-container hidden" id="extractionProgressContainer">
+                            <div class="progress-label" id="progressText">正在擦除水印并在本地提取文字...</div>
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill" id="progressBarFill" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 并排双栏文字对照面板 (对比效果拉满) -->
+                    <div class="contrast-grid">
+                        
+                        <!-- 左面板：原始 OCR / 提取文本 -->
+                        <div class="pane-card" id="paneOriginal">
+                            <div class="pane-header">
+                                <div class="pane-title">
+                                    <span class="indicator-dot gray"></span>
+                                    原始提取文本 (已过滤活字水印)
+                                </div>
+                                <div class="pane-actions">
+                                    <button class="pane-action-btn" id="btnCopyOriginal" title="复制原始文本">复制</button>
+                                </div>
+                            </div>
+                            <div class="pane-content-wrapper">
+                                <div class="line-numbers" id="originalLines">
+                                    <!-- 动态生成行号 -->
+                                </div>
+                                <div class="pane-text" id="originalTextContainer" contenteditable="false">
+                                    <!-- 文本内容 -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 右面板：本地 AI 纠错净化文本 -->
+                        <div class="pane-card" id="panePurified">
+                            <div class="pane-header">
+                                <div class="pane-title">
+                                    <span class="indicator-dot purple pulsing"></span>
+                                    本地 AI 净化文本 (智能排版与错字纠正)
+                                </div>
+                                <div class="pane-actions" style="display: flex; gap: 10px; align-items: center;">
+                                    <span class="ai-running-spinner hidden" id="aiSpinner"></span>
+                                    <div class="view-toggle" id="viewToggleContainer" style="display: none;">
+                                        <button class="toggle-view-btn active" id="btnViewHighlight" title="显示气泡色卡对比视图">🏷️ 气泡对比</button>
+                                        <button class="toggle-view-btn" id="btnViewRaw" title="显示原始大括号对照文本">📝 原始大括号</button>
+                                    </div>
+                                    <button class="pane-action-btn" id="btnCopyPurified" title="复制 AI 净化文本 (将保持原作的大括号格式)">复制</button>
+                                </div>
+                            </div>
+                            
+                            <div class="pane-content-wrapper">
+                                <div class="line-numbers" id="purifiedLines">
+                                    <!-- 动态生成行号 -->
+                                </div>
+                                <!-- 包含高亮卡片的高清展示区 -->
+                                <div class="pane-text" id="purifiedTextContainer" contenteditable="false">
+                                    <!-- AI 净化输出的排版文字，修改词会被解析为高亮标签 -->
+                                    <div class="ai-empty-prompt">
+                                        <svg class="sparkle-icon" viewBox="0 0 24 24"><path d="M12 2L9 9 2 12l7 3 3 7 3-7 7-3-7-3z"/></svg>
+                                        <p>点击上方工具栏的“AI 智能净化”按钮，一键发送给本地大模型，进行离线拼写纠错、合并硬断行与规范化重排。</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- 状态与控制底栏 -->
+                    <footer class="workspace-footer">
+                        <div class="stats-indicators">
+                            <span id="statChars">字数: 0</span>
+                            <span class="bullet-divider">•</span>
+                            <span id="statTime">提取耗时: --</span>
+                            <span class="bullet-divider">•</span>
+                            <span id="statAITime">AI 纠错耗时: --</span>
+                        </div>
+                        <div class="export-actions">
+                            <button class="btn-export secondary" id="btnExportTxt" disabled>导出 TXT</button>
+                            <button class="btn-export" id="btnExportMd" disabled>导出 Markdown</button>
+                        </div>
+                    </footer>
+                </div>
+
+            </section>
+            
+        </main>
+    </div>
+
+    <!-- 隐藏的本地文件输入框，用于触发标准文件选择 -->
+    <input type="file" id="fileInput" accept="application/pdf" style="display: none;">
+
+    <!-- 引入核心逻辑 JavaScript -->
+    <script src="app.js"></script>
+</body>
+</html>

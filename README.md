@@ -42,3 +42,10 @@ chmod +x build.sh
 ```
 
 构建成功后，将在当前目录下重新生成 `PDF文字提取.app`。
+
+---
+
+## 🎨 全新 UI 概念 Web 演示 (Preview)
+
+我们为下一代界面设计了一个基于最新苹果 macOS SwiftUI 风格的高保真交互式 Web 演示程序。您可以无需运行工程或安装任何依赖，直接双击运行项目根目录下的 [web_demo/index.html](file:///Users/luku/PDF%20%E6%96%87%E5%AD%97%E6%8F%90%E5%8F%96/web_demo/index.html) 进行预览和操作体验。
+
