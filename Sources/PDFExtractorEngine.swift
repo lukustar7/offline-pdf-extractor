@@ -340,10 +340,6 @@ class PDFExtractorEngine: ObservableObject {
         let targetPages = parsePageRange(pageRangeString, maxPages: pdfTotalPages)
         logOutput += "计划提取页码: \(targetPages.map { String($0) }.joined(separator: ", ")) (共 \(targetPages.count) 页)\n"
         
-        // 目标存盘路径 (同时生成 TXT 与 MD 文件)
-        let txtURL = url.deletingPathExtension().appendingPathExtension("txt")
-        let mdURL = url.deletingPathExtension().appendingPathExtension("md")
-        
         let startTime = Date()
         
         // 将主要 PDF 运算分发到后台串行队列，包含初次空文件写入以防主线程卡死
@@ -351,14 +347,7 @@ class PDFExtractorEngine: ObservableObject {
             guard let self = self else { return }
             guard self.currentExtractTokenSafe == token else { return }
             
-            // 异步初始化空文件，保护主线程不发生 IO 卡死
-            do {
-                try "".write(to: txtURL, atomically: true, encoding: .utf8)
-                let mdTitle = "# \(self.pdfFileName) 提取正文 (去水印)\n\n"
-                try mdTitle.write(to: mdURL, atomically: true, encoding: .utf8)
-            } catch {
-                self.updateStatus("⚠️ 警告：初始化本地写盘文件失败 \(error.localizedDescription)")
-            }
+
             
             // 后台线程独立重新加载 PDFDocument，解决主线程/子线程共享 PDFKit 实例崩溃问题
             guard let doc = PDFDocument(url: url) else {
@@ -381,11 +370,11 @@ class PDFExtractorEngine: ObservableObject {
                 
                 // 实时中止检查
                 if self.isCancelledSafe {
-                    self.updateStatus("❌ 处理被用户中止。已提取的数据已安全存在本地。")
+                    self.updateStatus("❌ 处理被用户中止。")
                     DispatchQueue.main.async { [weak self] in
                         guard let self = self else { return }
                         self.isProcessing = false
-                        completion(memoryBuffer, txtURL, mdURL, 0.0)
+                        completion(memoryBuffer, nil, nil, 0.0)
                     }
                     return
                 }
@@ -419,43 +408,11 @@ class PDFExtractorEngine: ObservableObject {
                 }
                 
                 let pageHeader = "\n[第 \(pageIndex) 页]\n"
-                let mdPageHeader = "\n## 第 \(pageIndex) 页\n\n"
                 let pageContent = pageText + "\n"
                 
                 memoryBuffer += pageHeader + pageContent
                 
                 guard self.currentExtractTokenSafe == token else { return }
-                
-                // 追加写盘 (TXT)
-                do {
-                    if !FileManager.default.fileExists(atPath: txtURL.path) {
-                        try "".write(to: txtURL, atomically: true, encoding: .utf8)
-                    }
-                    let fileHandle = try FileHandle(forWritingTo: txtURL)
-                    try fileHandle.seekToEnd()
-                    if let writeData = (pageHeader + pageContent).data(using: .utf8) {
-                        try fileHandle.write(contentsOf: writeData)
-                    }
-                    try fileHandle.close()
-                } catch {
-                    self.updateStatus("⚠️ 实时追加 TXT 写盘失败: \(error.localizedDescription)")
-                }
-                
-                // 追加写盘 (Markdown)
-                do {
-                    if !FileManager.default.fileExists(atPath: mdURL.path) {
-                        let mdTitle = "# \(self.pdfFileName) 提取正文 (去水印)\n\n"
-                        try mdTitle.write(to: mdURL, atomically: true, encoding: .utf8)
-                    }
-                    let fileHandle = try FileHandle(forWritingTo: mdURL)
-                    try fileHandle.seekToEnd()
-                    if let writeData = (mdPageHeader + pageContent).data(using: .utf8) {
-                        try fileHandle.write(contentsOf: writeData)
-                    }
-                    try fileHandle.close()
-                } catch {
-                    self.updateStatus("⚠️ 实时追加 Markdown 写盘失败: \(error.localizedDescription)")
-                }
                 
                 self.updateProgress(Double(index + 1) / Double(totalToProcess))
                 
@@ -486,12 +443,12 @@ class PDFExtractorEngine: ObservableObject {
             let totalTime = Date().timeIntervalSince(startTime)
             let avgPageTime = totalToProcess > 0 ? totalTime / Double(totalToProcess) : 0.0
             
-            self.updateStatus("🎉 处理完成！结果已自动保存。平均每页耗时: \(String(format: "%.2f", avgPageTime)) 秒。")
+            self.updateStatus("🎉 处理完成！平均每页耗时: \(String(format: "%.2f", avgPageTime)) 秒。")
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.isProcessing = false
                 self.etaString = ""
-                completion(memoryBuffer, txtURL, mdURL, avgPageTime)
+                completion(memoryBuffer, nil, nil, avgPageTime)
             }
         }
     }

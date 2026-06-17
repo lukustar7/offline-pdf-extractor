@@ -98,15 +98,6 @@ struct ContentView: View {
                 }
             }
             
-            // 5. Finder 路径直达
-            if let url = txtFileURL {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(action: { NSWorkspace.shared.activateFileViewerSelecting([url]) }) {
-                        Image(systemName: "folder")
-                    }
-                    .help("在 Finder 中打开并定位已生成的文本文件")
-                }
-            }
         }
         // 响应菜单/通知广播
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenFileNotification"))) { _ in
@@ -188,18 +179,28 @@ struct ContentView: View {
     private func startAIProcessingAction() {
         let systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
         
-        let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
-        let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
-        let customList = customWatermarks
-            .components(separatedBy: CharacterSet(charactersIn: ",，\n"))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        let allWatermarks = active.union(customList)
+        let showChanges = UserDefaults.standard.bool(forKey: "aiShowChanges")
+        let passWatermarks = UserDefaults.standard.bool(forKey: "aiPassWatermarks")
         
         var finalPrompt = systemPrompt
-        if !allWatermarks.isEmpty {
-            let watermarkStr = allWatermarks.sorted().joined(separator: ", ")
-            finalPrompt += "\n\n【参考提示——已知页面残余干扰词】：\(watermarkStr)\n如果输入正文的段落间或句子中，出现了与这些干扰词相关的无意义残留、乱码或碎裂的字符碎片，请在净化时将其作为噪音滤除；但如果该字词在上下文中属于正常的正文句子组成部分且语义连贯，请务必保留，切勿误伤正文。"
+        
+        if showChanges {
+            finalPrompt += "\n\n【极其重要——修改留痕指令】：\n每当你在排版、换行、字词或 Markdown 标记上修改或重构了任何内容，你必须在修改后的内容旁边，紧随其后附上大括号，格式为：“【识别是：[原始错误/硬换行]，修改为：[修改后/合并内容/Markdown标记]】”。"
+        }
+        
+        if passWatermarks {
+            let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
+            let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
+            let customList = customWatermarks
+                .components(separatedBy: CharacterSet(charactersIn: ",，\n"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let allWatermarks = active.union(customList)
+            
+            if !allWatermarks.isEmpty {
+                let watermarkStr = allWatermarks.sorted().joined(separator: ", ")
+                finalPrompt += "\n\n【参考提示——已知页面残余干扰词】：\(watermarkStr)\n如果输入正文的段落间或句子中，出现了与这些干扰词相关的无意义残留、乱码或碎裂的字符碎片，请在净化时将其作为噪音滤除；但如果该字词在上下文中属于正常的正文句子组成部分且语义连贯，请务必保留，切勿误伤正文。"
+            }
         }
         
         aiEngine.processTextWithAI(

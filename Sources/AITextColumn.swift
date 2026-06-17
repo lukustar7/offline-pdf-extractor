@@ -14,8 +14,7 @@ struct AITextColumn: View {
     2. 修复文本中由于 OCR 识别误差导致的可能错字、别字（例如把“而且”识别为“面且”，把“我们”识别为“我门”）。
     3. 智能修复不合理的强行换行：只合并由于 OCR 扫描在行尾造成的生硬硬断行，必须严格保留原文中所有的自然段落结构。
     4. 【Markdown 格式化】：智能分析文本中的标题、段落层级。对于明显的章节标题、小标题、列表项等，在输出中将其规范化转换为 Markdown 标记格式（如章节大标题前加 # 或 ##，列表项前加 - 等），以提高排版可读性。
-    5. 【修改留痕铁律】：每当你在排版、换行、字词或 Markdown 标记上修改或重构了任何内容，你必须在修改后的内容旁边，紧随其后附上大括号，格式为：“【识别是：[原始错误/硬换行]，修改为：[修改后/合并内容/Markdown标记]】”。
-    6. 只输出处理纠正且 Markdown 规范化后的最终文本，严禁夹带任何多余的开场白、Markdown 代码块围栏（如 ```markdown）或总结语！
+    5. 只输出处理纠正且 Markdown 规范化后的最终纯净文本，严禁夹带任何多余的开场白、Markdown 代码块围栏（如 ```markdown）或总结语！
     """
     
     @AppStorage("customWatermarks") private var customWatermarks = ""
@@ -198,18 +197,28 @@ struct AITextColumn: View {
             targetPages = [currentPage]
         }
         
-        // 动态拼装水印过滤词，作为上下文负面词输入以增强大模型对水印残留的鉴别过滤能力
-        let activeWatermarks = Set(extractorEngine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
-        let customList = customWatermarks
-            .components(separatedBy: CharacterSet(charactersIn: ",，\n"))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        let allWatermarks = activeWatermarks.union(customList)
+        let showChanges = UserDefaults.standard.bool(forKey: "aiShowChanges")
+        let passWatermarks = UserDefaults.standard.bool(forKey: "aiPassWatermarks")
         
         var finalPrompt = systemPrompt
-        if !allWatermarks.isEmpty {
-            let watermarkStr = allWatermarks.sorted().joined(separator: ", ")
-            finalPrompt += "\n\n【参考提示——已知页面残余干扰词】：\(watermarkStr)\n如果输入正文的段落间或句子中，出现了与这些干扰词相关的无意义残留、乱码或碎裂的字符碎片，请在净化时将其作为噪音滤除；但如果该字词在上下文中属于正常的正文句子组成部分且语义连贯，请务必保留，切勿误伤正文。"
+        
+        if showChanges {
+            finalPrompt += "\n\n【极其重要——修改留痕指令】：\n每当你在排版、换行、字词或 Markdown 标记上修改或重构了任何内容，你必须在修改后的内容旁边，紧随其后附上大括号，格式为：“【识别是：[原始错误/硬换行]，修改为：[修改后/合并内容/Markdown标记]】”。"
+        }
+        
+        if passWatermarks {
+            // 动态拼装水印过滤词，作为上下文负面词输入以增强大模型对水印残留的鉴别过滤能力
+            let activeWatermarks = Set(extractorEngine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
+            let customList = customWatermarks
+                .components(separatedBy: CharacterSet(charactersIn: ",，\n"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let allWatermarks = activeWatermarks.union(customList)
+            
+            if !allWatermarks.isEmpty {
+                let watermarkStr = allWatermarks.sorted().joined(separator: ", ")
+                finalPrompt += "\n\n【参考提示——已知页面残余干扰词】：\(watermarkStr)\n如果输入正文的段落间或句子中，出现了与这些干扰词相关的无意义残留、乱码或碎裂的字符碎片，请在净化时将其作为噪音滤除；但如果该字词在上下文中属于正常的正文句子组成部分且语义连贯，请务必保留，切勿误伤正文。"
+            }
         }
         
         aiEngine.processTextWithAI(

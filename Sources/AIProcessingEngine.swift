@@ -257,7 +257,7 @@ class AIProcessingEngine: ObservableObject {
         guard isAIProcessing else { return }
         
         if pendingPagesToProcess.isEmpty {
-            self.updateAIProgressStatus("🎉 本地 AI 净化校对完成！已自动导出文件。")
+            self.updateAIProgressStatus("🎉 本地 AI 净化校对完成！")
             saveAIResultToDisk()
             DispatchQueue.main.async { [weak self] in
                 self?.isAIProcessing = false
@@ -515,100 +515,12 @@ class AIProcessingEngine: ObservableObject {
         return chunks
     }
     
-    /// 将 AI 纠正的成果异步写盘 (由 ioQueue 执行)
     private func saveAIResultToDisk() {
-        guard let url = pdfURL, !aiResultText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        
-        let baseName = url.deletingPathExtension().lastPathComponent
-        let aiTxtURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("txt")
-        let aiMdURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("md")
-        
-        let finalResultText = aiResultText // 获取快照，安全传给子线程
-        let token = self.currentAITokenSafe // 捕获当前 Epoch
-        
-        ioQueue.async { [weak self] in
-            guard let self = self else { return }
-            // 写入前安全比对 Epoch Token
-            guard self.currentAITokenSafe == token else { return }
-            
-            do {
-                try finalResultText.write(to: aiTxtURL, atomically: true, encoding: .utf8)
-                
-                // 为 Markdown 添加标题
-                let mdContent = "# \(baseName) AI 净化校对正文\n\n\(finalResultText)"
-                try mdContent.write(to: aiMdURL, atomically: true, encoding: .utf8)
-                
-                self.updateAIProgressStatus("✅ 本地 AI 净化校对完成！已自动导出文件。")
-                
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    self.aiTxtFileURL = aiTxtURL
-                    self.aiMdFileURL = aiMdURL
-                }
-            } catch {
-                self.updateAIProgressStatus("❌ 本地 AI 净化已完成，但自动写入硬盘失败: \(error.localizedDescription)")
-            }
-        }
+        // 取消后台自动存盘，全部由用户在界面上点击导出按钮手动另存
     }
     
-    /// 分片落盘：在每分片完成时在 ioQueue 中追加写盘，彻底规避主线程 IO，应用 Epoch Token 隔离
     private func appendAIResultChunkToDisk(chunkContent: String, chunkIndex: Int) {
-        guard let url = pdfURL, !chunkContent.isEmpty else { return }
-        
-        let baseName = url.deletingPathExtension().lastPathComponent
-        let aiTxtURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("txt")
-        let aiMdURL = url.deletingLastPathComponent().appendingPathComponent(baseName + "_AI净化").appendingPathExtension("md")
-        
-        let token = self.currentAITokenSafe // 捕获当前 Epoch
-        
-        ioQueue.async { [weak self] in
-            guard let self = self else { return }
-            // 检查 Token 确定本任务在此 Epoch 周期内依然有效。若已取消重来，丢弃本次写入，防止前代数据污染新提取文档。
-            guard self.currentAITokenSafe == token else {
-                print("[AI写入提示] 丢弃前代残留分片的磁盘写入操作。")
-                return
-            }
-            
-            do {
-                if chunkIndex == 0 {
-                    try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
-                    let mdTitle = "# \(baseName) AI 净化校对正文\n\n"
-                    try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
-                }
-                
-                if !FileManager.default.fileExists(atPath: aiTxtURL.path) {
-                    try "".write(to: aiTxtURL, atomically: true, encoding: .utf8)
-                }
-                let fileHandle = try FileHandle(forWritingTo: aiTxtURL)
-                try fileHandle.seekToEnd()
-                let appendDataStr = chunkContent + "\n\n"
-                if let writeData = appendDataStr.data(using: .utf8) {
-                    try fileHandle.write(contentsOf: writeData)
-                }
-                try fileHandle.close()
-                
-                if !FileManager.default.fileExists(atPath: aiMdURL.path) {
-                    let mdTitle = "# \(baseName) AI 净化校对正文\n\n"
-                    try mdTitle.write(to: aiMdURL, atomically: true, encoding: .utf8)
-                }
-                let fileHandleMd = try FileHandle(forWritingTo: aiMdURL)
-                try fileHandleMd.seekToEnd()
-                
-                let mdAppendStr = "## 优化分段 \(chunkIndex + 1)\n\n" + chunkContent + "\n\n"
-                if let writeDataMd = mdAppendStr.data(using: .utf8) {
-                    try fileHandleMd.write(contentsOf: writeDataMd)
-                }
-                try fileHandleMd.close()
-                
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    self.aiTxtFileURL = aiTxtURL
-                    self.aiMdFileURL = aiMdURL
-                }
-            } catch {
-                print("分片磁盘追加失败: \(error.localizedDescription)")
-            }
-        }
+        // 取消后台自动追加分片落盘，数据纯在内存中保存
     }
 }
 

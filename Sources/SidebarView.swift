@@ -41,14 +41,17 @@ struct SidebarView: View {
     @AppStorage("contentType") private var contentType: ContentType = .electronic
     @AppStorage("extractImages") private var extractImages = false
     
+    @AppStorage("aiShowChanges") private var aiShowChanges = false
+    @AppStorage("aiPassWatermarks") private var aiPassWatermarks = false
+    
     @AppStorage("systemPrompt") private var systemPrompt = """
-    你是一个极为严谨的文本排版与错别字纠正助手。你将接收一段由 OCR 引擎从扫描件中识别出的原始文本。
+    你是一个极为严谨的文本排版、错别字纠正与 Markdown 转换助手。你将接收一段由 OCR 引擎从扫描件中识别出的原始文本。
     请执行以下处理：
-    1. 保持原文的主体段落结构 and 逻辑含义完全不变，切勿重写、扩写或精简正文内容。
+    1. 保持原文的主体段落结构与逻辑含义完全不变，切勿重写、缩写或扩写正文内容。
     2. 修复文本中由于 OCR 识别误差导致的可能错字、别字（例如把“而且”识别为“面且”，把“我们”识别为“我门”）。
-    3. 智能修复不合理的强行换行：只智能合并由于 OCR 扫描在行尾造成的生硬硬断行（本应是一句话但断开了）。【核心铁律】：严禁将原本属于不同自然段、有空行分隔或语义独立的换行强行合并为一行。必须严格保留原文中所有的自然段落结构！
-    4. 【核心铁律】：每当你在排版、硬换行、字词上修改了任何内容，你必须在修改后的内容旁边，紧随其后附上大括号，格式为：“【识别是：[原始错误/硬换行]，修改为：[修改后/合并内容]】”。
-    5. 只输出处理纠正后的最终文本，严禁夹带任何多余的开场白、解释、Markdown 标记或总结语！
+    3. 智能修复不合理的强行换行：只合并由于 OCR 扫描在行尾造成的生硬硬断行，必须严格保留原文中所有的自然段落结构。
+    4. 【Markdown 格式化】：智能分析文本中的标题、段落层级。对于明显的章节标题、小标题、列表项等，在输出中将其规范化转换为 Markdown 标记格式（如章节大标题前加 # 或 ##，列表项前加 - 等），以提高排版可读性。
+    5. 只输出处理纠正且 Markdown 规范化后的最终纯净文本，严禁夹带任何多余的开场白、Markdown 代码块围栏（如 ```markdown）或总结语！
     """
     
     // 侧边栏当前激活的 Tab：0 -> 提取设置, 1 -> AI 设置
@@ -455,6 +458,42 @@ struct SidebarView: View {
                                     .disabled(aiEngine.isAIProcessing)
                                 }
                                 
+                                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                    Text("高级净化选项")
+                                        .font(.system(.caption2, design: .default).weight(.semibold))
+                                        .foregroundColor(.secondary)
+                                    
+                                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                        Toggle(isOn: $aiShowChanges) {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text("要求 AI 输出修改留痕")
+                                                    .font(.system(.caption, design: .default).weight(.medium))
+                                                Text("开启后输出留痕括号，建议 14B/32B 以上本地强心智模型使用。")
+                                                    .font(.system(size: 9))
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        .toggleStyle(.checkbox)
+                                        .disabled(aiEngine.isAIProcessing)
+                                        
+                                        Toggle(isOn: $aiPassWatermarks) {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text("将水印干扰词作为负面词传给 AI")
+                                                    .font(.system(.caption, design: .default).weight(.medium))
+                                                Text("将识别到或自定义的水印词注入系统指令中，引导针对性清洗。")
+                                                    .font(.system(size: 9))
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        .toggleStyle(.checkbox)
+                                        .disabled(aiEngine.isAIProcessing)
+                                    }
+                                    .padding(Theme.Spacing.sm)
+                                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                                    .cornerRadius(6)
+                                }
+                                .padding(.bottom, Theme.Spacing.sm)
+
                                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                                     Text("排版与纠错系统提示词")
                                         .font(.system(.caption2, design: .default).weight(.medium))
