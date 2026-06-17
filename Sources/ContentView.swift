@@ -1,51 +1,85 @@
 import SwiftUI
 
-// MARK: - 主容器视图
+// MARK: - 主容器视图 (四栏并排物理页码联动架构)
 struct ContentView: View {
     @StateObject private var engine = PDFExtractorEngine()
     @StateObject private var aiEngine = AIProcessingEngine()
     
+    // 原始提取全文暂存（用于支持历史导出/高亮）
     @State private var resultText = ""
     @State private var txtFileURL: URL? = nil
     @State private var mdFileURL: URL? = nil
     
-    // selectedTab: 0 -> 原始提取文本, 1 -> 本地 AI 纠错净化
+    // 当前工作区所处的 Tab 标识（兼容旧菜单通知）
     @State private var selectedTab = 0
     
+    // 全局物理页码联动状态，作为共享单一事实源驱动后三栏（PDF预览、原文识字、AI优化）
+    @State private var currentPage = 1
+    
     var body: some View {
-        HSplitView {
-            // 左侧控制区 (Form 配置参数)
-            SidebarView(
-                engine: engine,
-                aiEngine: aiEngine,
-                resultText: $resultText,
-                txtFileURL: $txtFileURL,
-                mdFileURL: $mdFileURL,
-                selectedTab: $selectedTab
-            )
-            // 彻底移除固定 frame 宽，允许 macOS 原生 Split 拖拽拉伸
-            .frame(minWidth: 260, idealWidth: 300, maxWidth: 450)
-            
-            // 右侧主展示对照区
-            ResultView(
-                engine: engine,
-                aiEngine: aiEngine,
-                resultText: $resultText,
-                txtFileURL: $txtFileURL,
-                mdFileURL: $mdFileURL,
-                selectedTab: $selectedTab
-            )
-            .frame(minWidth: 500, maxWidth: .infinity)
+        ZStack {
+            if engine.pdfDocument == nil {
+                // 1. 文件尚未加载时，全屏展示极简拖拽/导入页
+                LaunchView(
+                    onFileSelected: { url in
+                        currentPage = 1
+                        engine.loadPDF(url: url)
+                    },
+                    onInvalidFile: { errorMsg in
+                        engine.errorMessage = errorMsg
+                    }
+                )
+                .transition(.opacity)
+            } else {
+                // 2. 文件载入完成后，平滑展示全新的“四栏并排物理页码联动工作区”
+                HSplitView {
+                    // 第一栏：配置控制侧边栏
+                    SidebarView(
+                        engine: engine,
+                        aiEngine: aiEngine,
+                        resultText: $resultText,
+                        txtFileURL: $txtFileURL,
+                        mdFileURL: $mdFileURL,
+                        selectedTab: $selectedTab
+                    )
+                    .frame(minWidth: 280, idealWidth: 320, maxWidth: 360)
+                    
+                    // 第二栏：PDF 原件预览区
+                    PDFPreviewView(
+                        pdfDocument: engine.pdfDocument,
+                        currentPage: $currentPage
+                    )
+                    .frame(minWidth: 240, idealWidth: 340, maxWidth: .infinity)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.2))
+                    
+                    // 第三栏：中部原始识字区
+                    RawTextColumn(
+                        engine: engine,
+                        currentPage: $currentPage,
+                        onStartExtraction: startExtractionAction
+                    )
+                    .frame(minWidth: 280, idealWidth: 360, maxWidth: .infinity)
+                    
+                    // 第四栏：右侧 AI 优化净化区
+                    AITextColumn(
+                        aiEngine: aiEngine,
+                        extractorEngine: engine,
+                        currentPage: $currentPage
+                    )
+                    .frame(minWidth: 280, idealWidth: 360, maxWidth: .infinity)
+                }
+                .transition(.opacity)
+            }
         }
         .background(VisualEffectView(material: .windowBackground, blendingMode: .behindWindow))
-        // 挂载 macOS 官方推荐的顶级 Window 工具栏 (Toolbar)
+        // 挂载 macOS 顶级 Window 工具栏支持，提供全键盘快捷键工作流
         .toolbar {
-            // 1. 折叠左侧栏的导航按钮
+            // 1. 折叠左侧栏按钮
             ToolbarItem(placement: .navigation) {
                 Button(action: toggleSidebar) {
                     Image(systemName: "sidebar.left")
                 }
-                .help("显示或折叠左侧提取配置面板")
+                .help("显示或折叠左侧配置面板")
             }
             
             // 2. 核心文件导入/关闭控制
@@ -54,7 +88,7 @@ struct ContentView: View {
                     Button(action: openFileAction) {
                         Label("导入 PDF", systemImage: "doc.badge.plus")
                     }
-                    .keyboardShortcut("o", modifiers: .command) // 直接在可见按钮上绑定快捷键 (P3-8 修复)
+                    .keyboardShortcut("o", modifiers: .command)
                     .help("导入 PDF 文件并自动分析 (⌘O)")
                 } else {
                     Button(action: clearFileAction) {
@@ -64,65 +98,7 @@ struct ContentView: View {
                 }
             }
             
-            // 3. 核心提取/取消提取指令
-            if !engine.pdfFileName.isEmpty {
-                ToolbarItem(placement: .primaryAction) {
-                    if engine.isProcessing {
-                        Button(action: { engine.cancelPDFExtraction() }) {
-                            Label("停止提取", systemImage: "stop.circle")
-                                .foregroundColor(.red)
-                        }
-                        .help("中止当前的文本提取线程")
-                    } else {
-                        // macOS 最新设计语言：在按钮点击/触发提取时增加弹性物理弹跳动画反馈 (Symbol Effects)
-                        if #available(macOS 14.0, *) {
-                            Button(action: startExtractionAction) {
-                                Label("提取文字", systemImage: "play.fill")
-                            }
-                            .symbolEffect(.bounce, value: engine.isProcessing)
-                            .disabled(aiEngine.isAIProcessing || engine.isAnalyzingWatermarks)
-                            .keyboardShortcut("r", modifiers: .command)
-                            .help("执行本地文字提取与去水印 (⌘R)")
-                        } else {
-                            Button(action: startExtractionAction) {
-                                Label("提取文字", systemImage: "play.fill")
-                            }
-                            .disabled(aiEngine.isAIProcessing || engine.isAnalyzingWatermarks)
-                            .keyboardShortcut("r", modifiers: .command)
-                            .help("执行本地文字提取与去水印 (⌘R)")
-                        }
-                    }
-                }
-            }
-            
-            // 4. AI 净化控制
-            if !resultText.isEmpty {
-                ToolbarItem(placement: .primaryAction) {
-                    if aiEngine.isAIProcessing {
-                        Button(action: { aiEngine.cancelAIProcessing() }) {
-                            Label("停止 AI", systemImage: "xmark.circle.fill")
-                                .foregroundColor(.red)
-                        }
-                        .help("中止当前的本地 AI 净化校对")
-                    } else {
-                        // macOS 最新设计语言：在 AI 净化触发时增加 sparkles 图标弹性弹跳效果，极具灵动感
-                        if #available(macOS 14.0, *) {
-                            Button(action: startAIProcessingAction) {
-                                Label("AI 净化", systemImage: "sparkles")
-                            }
-                            .symbolEffect(.bounce, value: aiEngine.isAIProcessing)
-                            .help("发送已提取文本进行本地 AI 排版与纠错")
-                        } else {
-                            Button(action: startAIProcessingAction) {
-                                Label("AI 净化", systemImage: "sparkles")
-                            }
-                            .help("发送已提取文本进行本地 AI 排版与纠错")
-                        }
-                    }
-                }
-            }
-            
-            // 5. 快速在 Finder 中高亮物理文件
+            // 5. Finder 路径直达
             if let url = txtFileURL {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { NSWorkspace.shared.activateFileViewerSelecting([url]) }) {
@@ -132,7 +108,7 @@ struct ContentView: View {
                 }
             }
         }
-        // 核心差距 A 修复：挂载通知中心监听器，响应来自系统菜单栏（Menu Bar Commands）的触发，保障键盘工作流
+        // 响应菜单/通知广播
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenFileNotification"))) { _ in
             openFileAction()
         }
@@ -142,18 +118,18 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StartAINotification"))) { _ in
-            if !resultText.isEmpty && !aiEngine.isAIProcessing && !engine.isProcessing {
+            if !engine.extractedPagesText.isEmpty && !aiEngine.isAIProcessing && !engine.isProcessing {
                 startAIProcessingAction()
             }
         }
     }
     
-    /// 触发 macOS 系统原生的 NSSplitViewController 侧边栏折叠机制
+    /// 折叠侧边栏
     private func toggleSidebar() {
         NSApp.keyWindow?.firstResponder?.tryToPerform(#selector(NSSplitViewController.toggleSidebar(_:)), with: nil)
     }
     
-    /// 打开 PDF 逻辑
+    /// 导入文件
     private func openFileAction() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
@@ -161,20 +137,22 @@ struct ContentView: View {
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.pdf]
         if panel.runModal() == .OK, let url = panel.url {
+            currentPage = 1
             engine.loadPDF(url: url)
         }
     }
     
-    /// 关闭文件与重置
+    /// 关闭当前 PDF 并且清空引擎的所有物理缓存
     private func clearFileAction() {
         engine.clear()
+        aiEngine.clear()
         resultText = ""
         txtFileURL = nil
         mdFileURL = nil
-        selectedTab = 0
+        currentPage = 1
     }
     
-    /// 开始提取文本
+    /// 触发物理分段提取文字
     private func startExtractionAction() {
         let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
         let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
@@ -187,6 +165,8 @@ struct ContentView: View {
         let watermarkRemovalModeRaw = UserDefaults.standard.string(forKey: "watermarkRemovalMode") ?? WatermarkRemovalMode.auto.rawValue
         let watermarkRemovalMode = WatermarkRemovalMode(rawValue: watermarkRemovalModeRaw) ?? .auto
         let enableWatermarkFilter = UserDefaults.standard.object(forKey: "enableWatermarkFilter") as? Bool ?? true
+        
+        currentPage = 1
         
         engine.extractText(
             activeWatermarks: active,
@@ -201,21 +181,31 @@ struct ContentView: View {
             self.resultText = result
             self.txtFileURL = url
             self.mdFileURL = mdUrl
-            withAnimation {
-                self.selectedTab = 1 // 跳转至提取文本 Tab (由 0 改为 1)
-            }
         }
     }
     
-    /// 发送给 AI 纠错净化
+    /// 触发物理分段 AI 净化
     private func startAIProcessingAction() {
-        withAnimation {
-            self.selectedTab = 2 // 跳转至 AI Tab (由 1 改为 2)
-        }
         let systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
+        
+        let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
+        let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
+        let customList = customWatermarks
+            .components(separatedBy: CharacterSet(charactersIn: ",，\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let allWatermarks = active.union(customList)
+        
+        var finalPrompt = systemPrompt
+        if !allWatermarks.isEmpty {
+            let watermarkStr = allWatermarks.sorted().joined(separator: ", ")
+            finalPrompt += "\n\n【参考提示——已知页面残余干扰词】：\(watermarkStr)\n如果输入正文的段落间或句子中，出现了与这些干扰词相关的无意义残留、乱码或碎裂的字符碎片，请在净化时将其作为噪音滤除；但如果该字词在上下文中属于正常的正文句子组成部分且语义连贯，请务必保留，切勿误伤正文。"
+        }
+        
         aiEngine.processTextWithAI(
-            inputText: resultText,
-            systemPrompt: systemPrompt,
+            extractedPages: engine.extractedPagesText,
+            targetPages: Array(1...engine.pdfTotalPages),
+            systemPrompt: finalPrompt,
             fileURL: engine.pdfURL
         )
     }

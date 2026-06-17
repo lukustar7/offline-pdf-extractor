@@ -24,6 +24,9 @@ class PDFExtractorEngine: ObservableObject {
     @Published var isAnalyzingWatermarks = false
     @Published var watermarkCandidates: [WatermarkCandidate] = []
     
+    // 物理页码对应的提取文本缓存，支持四栏工作区翻页同步联动
+    @Published var extractedPagesText: [Int: String] = [:]
+    
 
     
     // 预计剩余时间 (ETA)
@@ -194,6 +197,7 @@ class PDFExtractorEngine: ObservableObject {
         self.isCancelledSafe = false
         self.currentStatus = "未加载文件"
         self.logOutput = ""
+        self.extractedPagesText = [:]
     }
     
     /// 在后台串行队列中独立创建 PDFDocument 实例分析水印词，物理隔离主线程的 PDFDocument
@@ -313,6 +317,10 @@ class PDFExtractorEngine: ObservableObject {
         currentStatus = "准备开始处理..."
         logOutput += "\n=== 开始执行文字提取与去水印 ===\n"
         
+        DispatchQueue.main.async { [weak self] in
+            self?.extractedPagesText = [:]
+        }
+        
         // 解析自定义水印词
         let customList = customWatermarks
             .components(separatedBy: CharacterSet(charactersIn: ",，\n"))
@@ -404,6 +412,11 @@ class PDFExtractorEngine: ObservableObject {
                 
                 // 本地预设纠错替换
                 pageText = self.applyLocalCorrection(pageText)
+                
+                let pageTextToSave = pageText
+                DispatchQueue.main.async { [weak self] in
+                    self?.extractedPagesText[pageIndex] = pageTextToSave
+                }
                 
                 let pageHeader = "\n[第 \(pageIndex) 页]\n"
                 let mdPageHeader = "\n## 第 \(pageIndex) 页\n\n"

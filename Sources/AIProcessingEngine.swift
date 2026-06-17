@@ -8,6 +8,15 @@ class AIProcessingEngine: ObservableObject {
     @Published var aiTxtFileURL: URL?
     @Published var aiMdFileURL: URL?
     
+    // === 物理页码对应的 AI 优化文本缓存 ===
+    @Published var aiPagesText: [Int: String] = [:]
+    
+    // 当前正在处理的物理页队列缓存
+    private var pendingPagesToProcess: [(pageIndex: Int, text: String)] = []
+    
+    // 当前正在流式输出的目标物理页码
+    private var currentPageIndexProcessing: Int?
+    
     @Published var aiModels: [String] = []
     @Published var isAIFetchingModels = false
     
@@ -195,13 +204,13 @@ class AIProcessingEngine: ObservableObject {
     }
     
     /// 将提取后的正文发送给本地 AI 纠错与净化 (支持超长文本智能分片串行接力)
-    func processTextWithAI(inputText: String, systemPrompt: String, fileURL: URL?) {
-        let cleanInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleanInput.isEmpty {
-            self.updateAIProgressStatus("❌ 原始提取的文本为空，请先提取文本！")
-            return
-        }
-        
+    /// 本地 AI 净化校对主入口（现在改为完全以 PDF 物理页码为核心进行分段）
+    func processTextWithAI(
+        extractedPages: [Int: String],
+        targetPages: [Int],
+        systemPrompt: String,
+        fileURL: URL?
+    ) {
         cancelAIProcessing()
         
         self.pdfURL = fileURL
@@ -215,23 +224,39 @@ class AIProcessingEngine: ObservableObject {
         self.aiPendingOutputBuffer = ""
         
         self.systemPromptBackup = systemPrompt
-        
-        // 生成全新 Epoch Token，指示新一轮写入周期开始
         currentAITokenSafe = UUID()
         
-        let chunks = splitTextIntoChunks(cleanInput, maxChars: 1800)
-        self.pendingAIChunks = chunks
+        // 提取需要处理的非空物理页
+        var chunks: [(pageIndex: Int, text: String)] = []
+        for page in targetPages.sorted() {
+            if let text = extractedPages[page], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                chunks.append((pageIndex: page, text: text))
+            }
+        }
+        
+        if chunks.isEmpty {
+            self.updateAIProgressStatus("❌ 目标页面中没有需要净化的文本内容，请先提取文本。")
+            self.isAIProcessing = false
+            return
+        }
+        
+        self.pendingPagesToProcess = chunks
         self.aiTotalChunks = chunks.count
         self.aiCurrentChunkIndex = 0
         
-        processNextChunk(systemPrompt: systemPrompt)
+        // 初始化目标页的缓存
+        for chunk in chunks {
+            self.aiPagesText[chunk.pageIndex] = ""
+        }
+        
+        processNextPageChunk(systemPrompt: systemPrompt)
     }
     
-    /// 串行链式处理队列中的下一个分段
-    private func processNextChunk(systemPrompt: String) {
+    /// 串行链式处理队列中的下一个物理页
+    private func processNextPageChunk(systemPrompt: String) {
         guard isAIProcessing else { return }
         
-        if pendingAIChunks.isEmpty {
+        if pendingPagesToProcess.isEmpty {
             self.updateAIProgressStatus("🎉 本地 AI 净化校对完成！已自动导出文件。")
             saveAIResultToDisk()
             DispatchQueue.main.async { [weak self] in
@@ -248,11 +273,12 @@ class AIProcessingEngine: ObservableObject {
             return
         }
         
-        let chunkText = pendingAIChunks.removeFirst()
+        let next = pendingPagesToProcess.removeFirst()
+        self.currentPageIndexProcessing = next.pageIndex
         self.aiLastCompletedChunkText = ""
         self.aiPendingOutputBuffer = ""
         
-        updateAIProgressStatus("本地 AI 正在推理第 \(aiCurrentChunkIndex + 1) / \(aiTotalChunks) 段...")
+        updateAIProgressStatus("本地 AI 正在净化第 \(next.pageIndex) 页 (进度: \(aiCurrentChunkIndex + 1) / \(aiTotalChunks) 页)...")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -263,11 +289,11 @@ class AIProcessingEngine: ObservableObject {
             request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
         }
         
-        let strictSystemPrompt = systemPrompt + "\n【极其重要】：此输入是整篇长文本中的一小段。为了实现多段无缝拼接，您只需直接输出这一段净化排版后的纯正文内容，严禁夹带任何引导语、总结性废话。同时，您必须严格保留原本存在的自然段落结构与所有换行，切勿将它们强行合并或压缩为一大段！直接输出本段处理后的文字！"
+        let strictSystemPrompt = systemPrompt + "\n【极其重要】：当前输入是 PDF 中的第 \(next.pageIndex) 页正文内容。请根据系统指示进行水印过滤与语义还原，只输出净化排版后的纯正文，严禁输出任何引导语、修辞废话或总结。请务必保持原有的自然段落与换行格式！直接输出本页文字！"
         
         let messages: [[String: String]] = [
             ["role": "system", "content": strictSystemPrompt],
-            ["role": "user", "content": chunkText]
+            ["role": "user", "content": next.text]
         ]
         
         let requestBody: [String: Any] = [
@@ -285,13 +311,12 @@ class AIProcessingEngine: ObservableObject {
             return
         }
         
-        // 实例化解耦后的流代理，并在闭包中接收回传
         let streamDelegate = AIStreamDelegate()
         streamDelegate.onDeltaReceived = { [weak self] content in
             self?.appendDeltaText(content)
         }
         streamDelegate.onComplete = { [weak self] error in
-            self?.handleChunkComplete(error: error)
+            self?.handlePageChunkComplete(error: error)
         }
         self.currentStreamDelegate = streamDelegate
         
@@ -303,22 +328,18 @@ class AIProcessingEngine: ObservableObject {
         task.resume()
     }
     
-    /// 处理单片分片传输完毕后的接力和落盘逻辑
-    private func handleChunkComplete(error: Error?) {
-        // 在 delegate 网络回调线程中，必须安全分发到主线程，避免 Data Race 崩溃
+    /// 处理单页传输完毕后的接力和落盘逻辑
+    private func handlePageChunkComplete(error: Error?) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            
-            // 如果任务已被 cancel 清理，直接丢弃残余回调
             guard self.isAIProcessing else { return }
             
-            // 强力冲刷未写入界面的残留缓冲
             self.flushPendingAIText()
             
             self.currentAITask = nil
             self.currentAISession?.finishTasksAndInvalidate()
             self.currentAISession = nil
-            self.currentStreamDelegate = nil // 断开强引用
+            self.currentStreamDelegate = nil
             
             if let error = error as NSError? {
                 if error.code == NSURLErrorCancelled {
@@ -327,20 +348,27 @@ class AIProcessingEngine: ObservableObject {
                 self.updateAIProgressStatus("❌ 优化生成中断: \(error.localizedDescription)")
                 self.isAIProcessing = false
             } else {
-                self.aiCompletedText += self.aiLastCompletedChunkText + "\n\n"
+                // 每页处理完后，我们把这页的最终结果 aiLastCompletedChunkText 写回 aiPagesText
+                if let pageIdx = self.currentPageIndexProcessing {
+                    self.aiPagesText[pageIdx] = self.aiLastCompletedChunkText
+                }
                 
-                // 将文件写入异步派发至后台 I/O 线程，解决 UI 发生卡顿
+                // 将 memory 文本拼接，方便导出
+                let pageHeader = "\n[第 \(self.currentPageIndexProcessing ?? 0) 页]\n"
+                self.aiCompletedText += pageHeader + self.aiLastCompletedChunkText + "\n"
+                
                 let chunkToSave = self.aiLastCompletedChunkText
                 let chunkIdx = self.aiCurrentChunkIndex
                 self.appendAIResultChunkToDisk(chunkContent: chunkToSave, chunkIndex: chunkIdx)
                 
                 self.aiCurrentChunkIndex += 1
-                self.processNextChunk(systemPrompt: self.systemPromptBackup)
+                self.currentPageIndexProcessing = nil
+                self.processNextPageChunk(systemPrompt: self.systemPromptBackup)
             }
         }
     }
     
-    /// 中止 AI 文本润色进程
+    /// 中止 AI 文本润色进程 (保留已经吐出来的和已完成物理页的内容)
     func cancelAIProcessing() {
         // 强制递增时序 Token。所有已经在 ioQueue 线程中排队挂起的写盘任务，其持有的旧 Token 均将失效
         currentAITokenSafe = UUID()
@@ -349,27 +377,45 @@ class AIProcessingEngine: ObservableObject {
         let cleanup = { [weak self] in
             guard let self = self else { return }
             self.pendingAIChunks.removeAll()
+            self.pendingPagesToProcess.removeAll()
+            self.currentPageIndexProcessing = nil
             self.aiPendingOutputBuffer = ""
             
             if let task = self.currentAITask {
                 task.cancel()
                 self.currentAITask = nil
-                
-                self.currentAISession?.invalidateAndCancel()
-                self.currentAISession = nil
-                self.currentStreamDelegate = nil
-                
-                self.isAIProcessing = false
-                self.aiTxtFileURL = nil
-                self.aiMdFileURL = nil
-                self.updateAIProgressStatus("❌ 已主动取消 AI 优化净化流程。")
             }
+            
+            self.currentAISession?.invalidateAndCancel()
+            self.currentAISession = nil
+            self.currentStreamDelegate = nil
+            
+            self.isAIProcessing = false
+            self.aiTxtFileURL = nil
+            self.aiMdFileURL = nil
+            self.updateAIProgressStatus("❌ 已主动取消 AI 优化净化流程。")
         }
         
         if Thread.isMainThread {
             cleanup()
         } else {
             DispatchQueue.main.async(execute: cleanup)
+        }
+    }
+    
+    /// 彻底清除所有已保存的 AI 页码缓存与导出文件路径 (当关闭 PDF 文件时调用)
+    func clear() {
+        cancelAIProcessing()
+        let mainClear = { [weak self] in
+            guard let self = self else { return }
+            self.aiPagesText = [:]
+            self.aiResultText = ""
+            self.aiCompletedText = ""
+        }
+        if Thread.isMainThread {
+            mainClear()
+        } else {
+            DispatchQueue.main.async(execute: mainClear)
         }
     }
     
@@ -400,6 +446,11 @@ class AIProcessingEngine: ObservableObject {
         
         self.aiLastCompletedChunkText += textToAppend
         self.aiResultText = self.aiCompletedText + self.aiLastCompletedChunkText
+        
+        // 同步更新当前正在处理的物理页的 AI 净化文本缓存
+        if let pageIdx = currentPageIndexProcessing {
+            self.aiPagesText[pageIdx] = (self.aiPagesText[pageIdx] ?? "") + textToAppend
+        }
     }
     
     /// 【退避断句切分算法】：排版与分片重叠度智能预处理
