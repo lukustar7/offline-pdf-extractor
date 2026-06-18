@@ -4,6 +4,20 @@
 
 本项目遵循 [语义化版本控制 (SemVer)](https://semver.org/spec/v2.0.0.html) 规范。
 
+## [0.2.0] - 2026-06-18
+
+### Added
+- **Toolbar 统一控制流与页码输入回车跳转**：在主窗口顶栏新增上一页、下一页按钮和页码输入框组合，移除 RawTextColumn 底部冗余的分页控制器。支持在页码输入框输入数字并回车，完成范围安全校验后直接跳转到指定页面，三栏保持 100% 同步。
+
+### Changed
+- **单页横向原件预览与手势对接**：将 PDFPreviewView 的呈现模式更改为单页横向（.singlePage 且 .horizontal），以完美对接 macOS 原生的触控板双指左右扫动横向翻页手势，并在页码改变时自动联动整个工作区。
+- **并发安全与 MainActor 隔离重构**：将 PDFExtractorEngine 和 AIProcessingEngine 类整体标记为 @MainActor 隔离，免除所有手写的 DispatchQueue.main.async 派发。
+- **消灭信号量阻塞反模式**：重构后台提取和 OCR 调用为基于 withCheckedContinuation 的挂起机制，彻底移除了原本在后台阻塞物理线程的 DispatchSemaphore 同步等待逻辑。
+- **Representable 视图重绑定**：在 PDFPreviewView 的 updateNSView 周期中加入对 Coordinator.parent 的强制重新赋值绑定，消除了因 SwiftUI 树更新导致绑定失效、状态同步丢失及并发冲突的问题。
+
+### Fixed
+- **废弃 API 清除**：清理了所有 SwiftUI 视图中的废弃修饰符 .foregroundColor，将其规范升级为 .foregroundStyle 配合符合 ShapeStyle 协议的类型，解决所有编译器废弃警告。
+
 ## [0.1.0] - 2026-06-17
 
 ### Added

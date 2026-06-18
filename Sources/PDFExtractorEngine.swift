@@ -12,7 +12,17 @@ enum WatermarkRemovalMode: String, CaseIterable, Identifiable, Codable {
     var id: String { self.rawValue }
 }
 
+// MARK: - 支持的文字提取模式
+enum ExtractionMode: String, CaseIterable, Identifiable, Codable {
+    case smart = "智能提取（推荐）"
+    case textOnly = "仅提取活字（极速）"
+    case ocrOnly = "强制全部 OCR（适合扫描件）"
+    
+    var id: String { self.rawValue }
+}
+
 // MARK: - 核心 PDF 处理与 OCR 引擎
+@MainActor
 class PDFExtractorEngine: ObservableObject {
     @Published var isProcessing = false
     @Published var progress: Double = 0.0
@@ -27,8 +37,6 @@ class PDFExtractorEngine: ObservableObject {
     // 物理页码对应的提取文本缓存，支持四栏工作区翻页同步联动
     @Published var extractedPagesText: [Int: String] = [:]
     
-
-    
     // 预计剩余时间 (ETA)
     @Published var etaString: String = ""
     
@@ -36,7 +44,7 @@ class PDFExtractorEngine: ObservableObject {
     @Published var pdfDocument: PDFDocument?
     var pdfURL: URL?
     
-    struct WatermarkCandidate: Identifiable, Hashable {
+    struct WatermarkCandidate: Identifiable, Hashable, Sendable {
         let id = UUID()
         let text: String
         let occurrenceCount: Int
@@ -56,9 +64,7 @@ class PDFExtractorEngine: ObservableObject {
             cancelLock.lock()
             rawIsCancelled = newValue
             cancelLock.unlock()
-            DispatchQueue.main.async { [weak self] in
-                self?.isCancelled = newValue
-            }
+            self.isCancelled = newValue
         }
     }
     @Published var isCancelled = false
@@ -95,9 +101,6 @@ class PDFExtractorEngine: ObservableObject {
         }
     }
     
-    // 串行 PDF 提取专用队列，彻底将所有 PDFKit 操作序列化，远离主线程 PDFView 渲染竞态
-    private let pdfQueue = DispatchQueue(label: "com.pdfextractor.pdfqueue", qos: .userInitiated)
-    
     // 常用 OCR 易错错字本地校对字典
     private let ocrCorrectionMap: [String: String] = [
         "面且": "而且",
@@ -117,7 +120,7 @@ class PDFExtractorEngine: ObservableObject {
     // 用于通知 UI 加载失败时的错误信息 (P2-6 修复)
     @Published var errorMessage: String? = nil
     
-    /// 在后台异步加载 PDF 文件并进行水印词初始化扫描，规避大文件同步加载阻塞主线程 (P2-3, P2-6 修复)
+    /// 异步非阻塞加载 PDF，避免大文件实例化导致 UI 卡顿
     func loadPDF(url: URL) {
         self.errorMessage = nil
         self.pdfURL = url
@@ -141,49 +144,47 @@ class PDFExtractorEngine: ObservableObject {
         self.currentStatus = "正在加载文件..."
         self.logOutput = "正在加载文件: \(url.lastPathComponent)\n"
         
-        // 移至后台队列加载，完全避开主线程卡顿
-        pdfQueue.async { [weak self] in
-            guard let self = self else { return }
+        // 使用 Task 派发后台线程加载 PDFDocument 实例，彻底解放主线程
+        Task {
+            let (doc, pageCount) = await self.performPDFLoadingInBackground(url: url)
             
             // 确保没有被更新的加载任务覆盖
             guard self.currentLoadTokenSafe == token else { return }
             
-            guard let doc = PDFDocument(url: url) else {
-                DispatchQueue.main.async {
-                    guard self.currentLoadTokenSafe == token else { return }
-                    self.pdfDocument = nil
-                    self.pdfFileName = ""
-                    self.pdfFileSize = ""
-                    self.pdfTotalPages = 0
-                    self.isAnalyzingWatermarks = false
-                    self.currentStatus = "加载 PDF 失败"
-                    self.logOutput += "错误: 无法解析或加载该 PDF 文件。\n"
-                    self.errorMessage = "无法解析或加载此 PDF 文件。该文件可能已损坏、被加密或格式不正确。"
-                }
+            guard let resolvedDoc = doc else {
+                self.pdfDocument = nil
+                self.pdfFileName = ""
+                self.pdfFileSize = ""
+                self.pdfTotalPages = 0
+                self.isAnalyzingWatermarks = false
+                self.currentStatus = "加载 PDF 失败"
+                self.logOutput += "错误: 无法解析或加载该 PDF 文件。\n"
+                self.errorMessage = "无法解析或加载此 PDF 文件。该文件可能已损坏、被加密或格式不正确。"
                 return
             }
             
-            DispatchQueue.main.async {
-                guard self.currentLoadTokenSafe == token else { return }
-                self.pdfDocument = doc
-                self.pdfTotalPages = doc.pageCount
-                self.logOutput += "文件成功加载: \(url.lastPathComponent)\n"
-                self.currentStatus = "就绪，正在自动分析水印词..."
-                
-                // 加载成功后，在后台启动水印词分析任务
-                self.analyzeWatermarksInQueue(url: url, token: token)
-            }
+            self.pdfDocument = resolvedDoc
+            self.pdfTotalPages = pageCount
+            self.logOutput += "文件成功加载: \(url.lastPathComponent)\n"
+            self.currentStatus = "就绪，正在自动分析水印词..."
+            
+            // 自动分析水印词（后台非阻塞）
+            await self.analyzeWatermarksInQueue(url: url, token: token)
         }
+    }
+    
+    /// 后台非阻塞加载 PDFDocument 实例
+    nonisolated private func performPDFLoadingInBackground(url: URL) async -> (PDFDocument?, Int) {
+        let doc = PDFDocument(url: url)
+        return (doc, doc?.pageCount ?? 0)
     }
     
     /// 清除当前加载的文件并强行中断正在运行的后台任务
     func clear() {
-        // 先中止所有后台任务并递增 Token，确保旧任务立即失效不再写入
         cancelPDFExtraction()
         self.currentLoadTokenSafe = nil
         self.currentExtractTokenSafe = nil
         
-        // 然后安全重置全部 UI 状态
         self.isAnalyzingWatermarks = false
         self.pdfDocument = nil
         self.pdfURL = nil
@@ -200,31 +201,23 @@ class PDFExtractorEngine: ObservableObject {
         self.extractedPagesText = [:]
     }
     
-    /// 在后台串行队列中独立创建 PDFDocument 实例分析水印词，物理隔离主线程的 PDFDocument
-    private func analyzeWatermarksInQueue(url: URL, token: UUID) {
+    /// 后台非阻塞执行前 30 页水印字词词频计算
+    private func analyzeWatermarksInQueue(url: URL, token: UUID) async {
         self.isAnalyzingWatermarks = true
-        pdfQueue.async { [weak self] in
-            guard let self = self else { return }
-            // 从 URL 独立加载实例，规避多线程读取同一实例崩溃
-            guard let doc = PDFDocument(url: url) else {
-                DispatchQueue.main.async { [weak self] in
-                    self?.isAnalyzingWatermarks = false
-                }
-                return
-            }
+        
+        let candidates = await Task.detached(priority: .userInitiated) { () -> [WatermarkCandidate] in
+            guard let doc = PDFDocument(url: url) else { return [] }
             
             var counts: [String: Int] = [:]
             let pageCount = doc.pageCount
             let maxPagesToScan = min(pageCount, 30)
             
             for i in 0..<maxPagesToScan {
-                guard self.currentLoadTokenSafe == token else { return }
                 guard let page = doc.page(at: i) else { continue }
                 let selections = page.selection(for: page.bounds(for: .mediaBox))?.selectionsByLine() ?? []
                 for sel in selections {
                     if let text = sel.string?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), !text.isEmpty {
                         if text.count >= 2 && text.count <= 30 {
-                            // 限制 counts 字典容量为最大 5000 条，保护内存占用恒定 O(1)
                             if counts.count < 5000 || counts[text] != nil {
                                 counts[text, default: 0] += 1
                             }
@@ -234,24 +227,22 @@ class PDFExtractorEngine: ObservableObject {
             }
             
             let threshold = max(2, Int(Double(maxPagesToScan) * 0.2))
-            let candidates = counts.filter { $0.value >= threshold }
+            let filtered = counts.filter { $0.value >= threshold }
                 .map { WatermarkCandidate(text: $0.key, occurrenceCount: $0.value, isSelected: true) }
                 .sorted { $0.occurrenceCount > $1.occurrenceCount }
-            
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                guard self.currentLoadTokenSafe == token else { return }
-                
-                self.watermarkCandidates = candidates
-                self.isAnalyzingWatermarks = false
-                if candidates.isEmpty {
-                    self.currentStatus = "分析完毕，未检测到高频活字水印。"
-                    self.logOutput += "未检测到明显的页面重复活字水印，您也可以手动添加过滤词。\n"
-                } else {
-                    self.currentStatus = "分析完毕，发现 \(candidates.count) 个疑似水印词。"
-                    self.logOutput += "检测到疑似水印词：\n" + candidates.map { " - \"\($0.text)\" (\($0.occurrenceCount)页出现)" }.joined(separator: "\n") + "\n"
-                }
-            }
+            return filtered
+        }.value
+        
+        guard self.currentLoadTokenSafe == token else { return }
+        
+        self.watermarkCandidates = candidates
+        self.isAnalyzingWatermarks = false
+        if candidates.isEmpty {
+            self.currentStatus = "分析完毕，未检测到高频活字水印。"
+            self.logOutput += "未检测到明显的页面重复活字水印，您也可以手动添加过滤词。\n"
+        } else {
+            self.currentStatus = "分析完毕，发现 \(candidates.count) 个疑似水印词。"
+            self.logOutput += "检测到疑似水印词：\n" + candidates.map { " - \"\($0.text)\" (\($0.occurrenceCount)页出现)" }.joined(separator: "\n") + "\n"
         }
     }
     
@@ -263,7 +254,6 @@ class PDFExtractorEngine: ObservableObject {
         }
         
         var pages = Set<Int>()
-        // 兼容中文逗号和英文逗号
         let parts = trimmed.components(separatedBy: CharacterSet(charactersIn: ",，"))
         let connectors = CharacterSet(charactersIn: "-~～—")
         
@@ -292,7 +282,7 @@ class PDFExtractorEngine: ObservableObject {
         return pages.isEmpty ? Array(1...maxPages) : pages.sorted()
     }
     
-    /// 执行文字提取与去水印任务 (完整三大去水印模式支持)
+    /// 执行文字提取与去水印任务 (现代 async 改造)
     func extractText(
         activeWatermarks: Set<String>,
         customWatermarks: String,
@@ -317,9 +307,7 @@ class PDFExtractorEngine: ObservableObject {
         currentStatus = "准备开始处理..."
         logOutput += "\n=== 开始执行文字提取与去水印 ===\n"
         
-        DispatchQueue.main.async { [weak self] in
-            self?.extractedPagesText = [:]
-        }
+        self.extractedPagesText = [:]
         
         // 解析自定义水印词
         let customList = customWatermarks
@@ -342,19 +330,13 @@ class PDFExtractorEngine: ObservableObject {
         
         let startTime = Date()
         
-        // 将主要 PDF 运算分发到后台串行队列，包含初次空文件写入以防主线程卡死
-        pdfQueue.async { [weak self] in
-            guard let self = self else { return }
-            guard self.currentExtractTokenSafe == token else { return }
-            
-
-            
-            // 后台线程独立重新加载 PDFDocument，解决主线程/子线程共享 PDFKit 实例崩溃问题
-            guard let doc = PDFDocument(url: url) else {
+        // 在异步协程链中接力执行
+        Task {
+            // 异步后台加载 PDFDocument 实例副本，杜绝多线程冲突
+            let (loadedDoc, _) = await self.performPDFLoadingInBackground(url: url)
+            guard let doc = loadedDoc else {
                 self.updateStatus("❌ 无法以安全模式在后台读取 PDF 文档。")
-                DispatchQueue.main.async { [weak self] in
-                    self?.isProcessing = false
-                }
+                self.isProcessing = false
                 return
             }
             
@@ -362,61 +344,40 @@ class PDFExtractorEngine: ObservableObject {
             let totalToProcess = targetPages.count
             
             for (index, pageIndex) in targetPages.enumerated() {
-                // 安全校验，防任务重入污染
-                guard self.currentExtractTokenSafe == token else {
-                    print("[提取提示] 检测到新任务或已清除，旧后台线程已安全退出。")
-                    return
-                }
-                
-                // 实时中止检查
+                // 安全校验与中断控制
+                guard self.currentExtractTokenSafe == token else { return }
                 if self.isCancelledSafe {
                     self.updateStatus("❌ 处理被用户中止。")
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        self.isProcessing = false
-                        completion(memoryBuffer, nil, nil, 0.0)
-                    }
+                    self.isProcessing = false
+                    completion(memoryBuffer, nil, nil, 0.0)
                     return
                 }
                 
                 self.updateStatus("正在处理第 \(pageIndex) 页 (总进度: \(index + 1) / \(totalToProcess))...")
                 
-                var pageText = ""
-                
-                // OCR 内存释放隔离，解决大文件 OCR 时 OOM 的问题
-                autoreleasepool {
-                    guard let page = doc.page(at: pageIndex - 1) else { return }
-                    
-                    pageText = self.processPage(
-                        page: page,
-                        pageIndex: pageIndex,
-                        watermarkFilters: allWatermarkFilters,
-                        ignoreCase: ignoreCase,
-                        mode: mode,
-                        watermarkRemovalMode: watermarkRemovalMode,
-                        enableWatermarkFilter: enableWatermarkFilter,
-                        eraseImageWatermark: eraseImageWatermark
-                    )
-                }
-                
-                // 本地预设纠错替换
-                pageText = self.applyLocalCorrection(pageText)
-                
-                let pageTextToSave = pageText
-                DispatchQueue.main.async { [weak self] in
-                    self?.extractedPagesText[pageIndex] = pageTextToSave
-                }
-                
-                let pageHeader = "\n[第 \(pageIndex) 页]\n"
-                let pageContent = pageText + "\n"
-                
-                memoryBuffer += pageHeader + pageContent
+                // 协程挂起，在非隔离后台执行单页提取逻辑（包含图片渲染、物理白底遮挡与 Vision OCR）
+                let pageText = await self.performPageExtractionInBackground(
+                    doc: doc,
+                    pageIndex: pageIndex,
+                    watermarkFilters: allWatermarkFilters,
+                    ignoreCase: ignoreCase,
+                    mode: mode,
+                    watermarkRemovalMode: watermarkRemovalMode,
+                    enableWatermarkFilter: enableWatermarkFilter,
+                    eraseImageWatermark: eraseImageWatermark
+                )
                 
                 guard self.currentExtractTokenSafe == token else { return }
                 
-                self.updateProgress(Double(index + 1) / Double(totalToProcess))
+                // 将页面结果写入缓存，触发 SwiftUI UI 刷新
+                self.extractedPagesText[pageIndex] = pageText
                 
-                // 实时计算剩余时间 (ETA)
+                let pageHeader = "\n[第 \(pageIndex) 页]\n"
+                let pageContent = pageText + "\n"
+                memoryBuffer += pageHeader + pageContent
+                
+                // 更新进度与 ETA 估值
+                self.updateProgress(Double(index + 1) / Double(totalToProcess))
                 let elapsed = Date().timeIntervalSince(startTime)
                 let avgTime = elapsed / Double(index + 1)
                 let remainingPages = totalToProcess - (index + 1)
@@ -432,10 +393,7 @@ class PDFExtractorEngine: ObservableObject {
                     let seconds = Int(etaSeconds) % 60
                     etaText = "预计约剩 \(minutes) 分 \(seconds) 秒"
                 }
-                
-                DispatchQueue.main.async { [weak self] in
-                    self?.etaString = etaText
-                }
+                self.etaString = etaText
             }
             
             guard self.currentExtractTokenSafe == token else { return }
@@ -444,13 +402,42 @@ class PDFExtractorEngine: ObservableObject {
             let avgPageTime = totalToProcess > 0 ? totalTime / Double(totalToProcess) : 0.0
             
             self.updateStatus("🎉 处理完成！平均每页耗时: \(String(format: "%.2f", avgPageTime)) 秒。")
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.isProcessing = false
-                self.etaString = ""
-                completion(memoryBuffer, nil, nil, avgPageTime)
-            }
+            self.isProcessing = false
+            self.etaString = ""
+            completion(memoryBuffer, nil, nil, avgPageTime)
         }
+    }
+    
+    /// 后台非主线程执行页面处理核心计算（解耦 MainActor）
+    nonisolated private func performPageExtractionInBackground(
+        doc: PDFDocument,
+        pageIndex: Int,
+        watermarkFilters: Set<String>,
+        ignoreCase: Bool,
+        mode: ExtractionMode,
+        watermarkRemovalMode: WatermarkRemovalMode,
+        enableWatermarkFilter: Bool,
+        eraseImageWatermark: Bool
+    ) async -> String {
+        await Task.detached(priority: .userInitiated) { [weak self] () async -> String in
+            guard let self = self else { return "" }
+            var pageText = ""
+            
+            guard let page = doc.page(at: pageIndex - 1) else { return "" }
+            pageText = await self.processPage(
+                page: page,
+                pageIndex: pageIndex,
+                watermarkFilters: watermarkFilters,
+                ignoreCase: ignoreCase,
+                mode: mode,
+                watermarkRemovalMode: watermarkRemovalMode,
+                enableWatermarkFilter: enableWatermarkFilter,
+                eraseImageWatermark: eraseImageWatermark
+            )
+            
+            pageText = self.applyLocalCorrection(pageText)
+            return pageText
+        }.value
     }
     
     /// 主动中止当前的文字提取线程
@@ -463,29 +450,22 @@ class PDFExtractorEngine: ObservableObject {
     }
     
     private func updateStatus(_ status: String) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.currentStatus = status
-            self.logOutput += status + "\n"
-            // 限制日志最大长度，防止数百页 PDF 处理时内存与 SwiftUI 渲染卡顿
-            if self.logOutput.count > 50000 {
-                let lines = self.logOutput.components(separatedBy: "\n")
-                if lines.count > 200 {
-                    self.logOutput = "...(旧日志已截断)...\n" + lines.suffix(200).joined(separator: "\n")
-                }
+        self.currentStatus = status
+        self.logOutput += status + "\n"
+        if self.logOutput.count > 50000 {
+            let lines = self.logOutput.components(separatedBy: "\n")
+            if lines.count > 200 {
+                self.logOutput = "...(旧日志已截断)...\n" + lines.suffix(200).joined(separator: "\n")
             }
         }
     }
     
     private func updateProgress(_ val: Double) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.progress = val
-        }
+        self.progress = val
     }
     
     /// 常用 OCR 纠错本地替换
-    private func applyLocalCorrection(_ text: String) -> String {
+    nonisolated private func applyLocalCorrection(_ text: String) -> String {
         var corrected = text
         for (wrong, right) in ocrCorrectionMap {
             corrected = corrected.replacingOccurrences(of: wrong, with: right)
@@ -493,8 +473,8 @@ class PDFExtractorEngine: ObservableObject {
         return corrected
     }
     
-    /// 底层分流与去水印核心算法 (三种不同 PDF 水印/正文场景)
-    private func processPage(
+    /// 底层同步分流纯计算方法 (已解耦 MainActor，专职后台运行)
+    nonisolated private func processPage(
         page: PDFPage,
         pageIndex: Int,
         watermarkFilters: Set<String>,
@@ -503,24 +483,20 @@ class PDFExtractorEngine: ObservableObject {
         watermarkRemovalMode: WatermarkRemovalMode,
         enableWatermarkFilter: Bool,
         eraseImageWatermark: Bool
-    ) -> String {
+    ) async -> String {
         let allSelections = page.selection(for: page.bounds(for: .mediaBox))?.selectionsByLine() ?? []
-        
-        // 1. 全局开关控制：若禁用去水印，则过滤词为空
         let activeFilters = enableWatermarkFilter ? watermarkFilters : Set<String>()
         
-        // 2. 诊断与分流策略
         var resolvedMode = watermarkRemovalMode
         if resolvedMode == .auto {
             let rawCharCount = allSelections.reduce(0) { $0 + ($1.string?.count ?? 0) }
             if rawCharCount > 100 {
-                resolvedMode = .modeA // 正文字词量大 ➡️ 模式 A (纯文本过滤)
+                resolvedMode = .modeA
             } else {
-                resolvedMode = (rawCharCount > 0) ? .modeB : .modeC // 文字少且有可选字 ➡️ 模式 B，完全无字 ➡️ 模式 C
+                resolvedMode = (rawCharCount > 0) ? .modeB : .modeC
             }
         }
         
-        // 3. 通道抉择 (结合用户强制指定的 OCR 设置)
         let shouldOCR: Bool
         switch mode {
         case .smart:
@@ -534,12 +510,8 @@ class PDFExtractorEngine: ObservableObject {
         var pageResult = ""
         
         if shouldOCR {
-            // 需要跑 OCR 的逻辑 (模式 B 或 模式 C)
-            self.updateStatus("第 \(pageIndex) 页: 正在启用本地 Vision OCR 识别...")
-            
             var maskSelections: [PDFSelection] = []
             if resolvedMode == .modeB && enableWatermarkFilter {
-                // 模式 B：获取用于像素抹白的水印 Bounds 集合
                 for sel in allSelections {
                     guard let text = sel.string else { continue }
                     if isWatermark(text: text, filters: activeFilters, ignoreCase: ignoreCase) {
@@ -548,43 +520,25 @@ class PDFExtractorEngine: ObservableObject {
                 }
             }
             
-            // 物理抹白，如果无需抹白或模式 C，maskSelections 传入空即可
             let coverSelections = eraseImageWatermark ? maskSelections : (resolvedMode == .modeB ? maskSelections : [])
             
             if let cgImage = renderPageToCGImage(page: page, watermarkSelections: coverSelections) {
-                let semaphore = DispatchSemaphore(value: 0)
-                var rawOCRText = ""
-                
-                performLocalOCR(on: cgImage) { recognized in
-                    rawOCRText = recognized
-                    semaphore.signal()
-                }
-                
-                let waitResult = semaphore.wait(timeout: .now() + 60.0)
-                if waitResult == .timedOut {
-                    self.updateStatus("⚠️ 第 \(pageIndex) 页: Vision OCR 执行超时（超过60秒），已跳过。")
+                let rawOCRText = await performLocalOCR(on: cgImage)
+                if resolvedMode == .modeC && enableWatermarkFilter {
+                    pageResult = self.cleanText(rawOCRText, filters: activeFilters, ignoreCase: ignoreCase)
                 } else {
-                    if resolvedMode == .modeC && enableWatermarkFilter {
-                        // 模式 C：OCR 识别出全部内容后，进行字符串净化后处理
-                        pageResult = self.cleanText(rawOCRText, filters: activeFilters, ignoreCase: ignoreCase)
-                    } else {
-                        pageResult = rawOCRText
-                    }
-                    self.updateStatus("第 \(pageIndex) 页: OCR 识别与去水印处理完成。")
+                    pageResult = rawOCRText
                 }
             } else {
-                self.updateStatus("第 \(pageIndex) 页: 渲染页面物理图像失败。")
+                pageResult = ""
             }
         } else {
-            // 文字提取逻辑 (模式 A)
-            self.updateStatus("第 \(pageIndex) 页: 正在以纯文本模式提取正文...")
+            // 文字提取模式
             var normalTextPieces: [String] = []
             var lastWasEmpty = false
             
             for sel in allSelections {
                 guard let text = sel.string else { continue }
-                
-                // 模式 A 独享的严格完全匹配过滤，彻底防止 contains 包含匹配误杀正文
                 if enableWatermarkFilter && isWatermarkStrict(text: text, filters: activeFilters, ignoreCase: ignoreCase) {
                     continue
                 }
@@ -601,14 +555,13 @@ class PDFExtractorEngine: ObservableObject {
                 }
             }
             pageResult = normalTextPieces.joined(separator: "\n")
-            self.updateStatus("第 \(pageIndex) 页: 文本过滤与提取完成。")
         }
         
         return pageResult
     }
     
-    /// 水印模糊包含比对 (适用于扫描件 OCR 物理擦除定位)
-    private func isWatermark(text: String, filters: Set<String>, ignoreCase: Bool) -> Bool {
+    /// 水印包含比对
+    nonisolated private func isWatermark(text: String, filters: Set<String>, ignoreCase: Bool) -> Bool {
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanText.isEmpty { return false }
         
@@ -622,15 +575,14 @@ class PDFExtractorEngine: ObservableObject {
         return false
     }
     
-    /// 水印严格整行匹配判定 (模式 A 核心防误杀机制)
-    private func isWatermarkStrict(text: String, filters: Set<String>, ignoreCase: Bool) -> Bool {
+    /// 水印严格完全匹配
+    nonisolated private func isWatermarkStrict(text: String, filters: Set<String>, ignoreCase: Bool) -> Bool {
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanText.isEmpty { return false }
         
         let textToCompare = ignoreCase ? cleanText.lowercased() : cleanText
         for filter in filters {
             let filterToCompare = ignoreCase ? filter.lowercased() : filter
-            // 必须整行与水印匹配词完全相等，或者是长水印的前后截断相等，才作为水印抛弃，绝对不伤及正文
             if textToCompare == filterToCompare {
                 return true
             }
@@ -638,8 +590,8 @@ class PDFExtractorEngine: ObservableObject {
         return false
     }
     
-    /// 水印清理
-    private func cleanText(_ text: String, filters: Set<String>, ignoreCase: Bool) -> String {
+    /// 水印文本净化
+    nonisolated private func cleanText(_ text: String, filters: Set<String>, ignoreCase: Bool) -> String {
         var cleaned = text
         for filter in filters {
             if filter.count >= 2 {
@@ -671,7 +623,7 @@ class PDFExtractorEngine: ObservableObject {
         return cleanedLines.joined(separator: "\n")
     }
     
-    private func replaceIgnoreCase(in text: String, target: String, with replacement: String) -> String {
+    nonisolated private func replaceIgnoreCase(in text: String, target: String, with replacement: String) -> String {
         var result = text
         while let range = result.range(of: target, options: .caseInsensitive) {
             result.replaceSubrange(range, with: replacement)
@@ -679,10 +631,9 @@ class PDFExtractorEngine: ObservableObject {
         return result
     }
     
-    /// 高阶物理渲染：直接生成底层的 CGImage，极大地节省了 NSImage 包装的转码时延和内存泄露
-    private func renderPageToCGImage(page: PDFPage, watermarkSelections: [PDFSelection]) -> CGImage? {
+    /// 高阶物理渲染
+    nonisolated private func renderPageToCGImage(page: PDFPage, watermarkSelections: [PDFSelection]) -> CGImage? {
         let pageBounds = page.bounds(for: .mediaBox)
-        // 动态计算缩放比例：确保渲染分辨率最大边不超过 4096 像素，防止超大页面 OOM 崩溃
         let maxPixelDimension: CGFloat = 4096.0
         let maxPageDimension = max(pageBounds.width, pageBounds.height)
         let scale: CGFloat = min(3.0, maxPixelDimension / maxPageDimension)
@@ -717,11 +668,9 @@ class PDFExtractorEngine: ObservableObject {
         
         page.draw(with: .mediaBox, to: context.cgContext)
         
-        // 模式 B：执行物理抹白遮盖
         NSColor.white.set()
         for selection in watermarkSelections {
             let bounds = selection.bounds(for: page)
-            // 微微向外扩张 1.5 pt，保证完全将可能包含抗锯齿边缘的笔画完全覆盖遮白
             let coverRect = bounds.insetBy(dx: -1.5, dy: -1.5)
             coverRect.fill()
         }
@@ -730,15 +679,13 @@ class PDFExtractorEngine: ObservableObject {
         return rep.cgImage
     }
     
-    /// 本地 Vision OCR 识别算法 (并发指派，规避主提取队列死锁)
-    private func performLocalOCR(on cgImage: CGImage, completion: @escaping (String) -> Void) {
-        // 将同步阻塞的 Vision perform 操作指派到系统后台全局并发队列，不占用 pdfQueue 串行提取队列的资源
-        DispatchQueue.global(qos: .userInitiated).async {
+    /// 本地 Vision OCR 识别算法 (使用 Continuation 异步协程挂起平替 Semaphore 物理阻塞)
+    nonisolated private func performLocalOCR(on cgImage: CGImage) async -> String {
+        await withCheckedContinuation { continuation in
             let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            
             let request = VNRecognizeTextRequest { (request, error) in
                 guard let observations = request.results as? [VNRecognizedTextObservation] else {
-                    completion("")
+                    continuation.resume(returning: "")
                     return
                 }
                 
@@ -748,7 +695,7 @@ class PDFExtractorEngine: ObservableObject {
                         recognizedText += candidate.string + "\n"
                     }
                 }
-                completion(recognizedText)
+                continuation.resume(returning: recognizedText)
             }
             
             request.recognitionLevel = .accurate
@@ -759,17 +706,8 @@ class PDFExtractorEngine: ObservableObject {
                 try requestHandler.perform([request])
             } catch {
                 print("Vision OCR 引擎执行失败: \(error)")
-                completion("")
+                continuation.resume(returning: "")
             }
         }
     }
-}
-
-// MARK: - 支持的文字提取模式
-enum ExtractionMode: String, CaseIterable, Identifiable, Codable {
-    case smart = "智能提取（推荐）"
-    case textOnly = "仅提取活字（极速）"
-    case ocrOnly = "强制全部 OCR（适合扫描件）"
-    
-    var id: String { self.rawValue }
 }

@@ -15,6 +15,7 @@ struct ContentView: View {
     
     // 全局物理页码联动状态，作为共享单一事实源驱动后三栏（PDF预览、原文识字、AI优化）
     @State private var currentPage = 1
+    @State private var pageInput = "1"
     
     var body: some View {
         ZStack {
@@ -23,6 +24,7 @@ struct ContentView: View {
                 LaunchView(
                     onFileSelected: { url in
                         currentPage = 1
+                        pageInput = "1"
                         engine.loadPDF(url: url)
                     },
                     onInvalidFile: { errorMsg in
@@ -82,7 +84,52 @@ struct ContentView: View {
                 .help("显示或折叠左侧配置面板")
             }
             
-            // 2. 核心文件导入/关闭控制
+            // 2. 全局页码联动翻页与回车秒跳转控制组（当 PDF 已成功加载时呈现）
+            ToolbarItemGroup(placement: .principal) {
+                if engine.pdfTotalPages > 0 {
+                    HStack(spacing: 8) {
+                        Button(action: {
+                            if currentPage > 1 {
+                                currentPage -= 1
+                            }
+                        }) {
+                            Image(systemName: "chevron.left")
+                        }
+                        .disabled(currentPage <= 1 || engine.isProcessing)
+                        .help("上一页")
+                        
+                        TextField("", text: $pageInput, onCommit: {
+                            if let newPage = Int(pageInput.trimmingCharacters(in: .whitespacesAndNewlines)),
+                               newPage >= 1 && newPage <= engine.pdfTotalPages {
+                                currentPage = newPage
+                            } else {
+                                pageInput = String(currentPage) // 输入无效时复原
+                            }
+                        })
+                        .frame(width: 44)
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.center)
+                        .disabled(engine.isProcessing)
+                        .help("输入页码回车跳转")
+                        
+                        Text("/  \(engine.pdfTotalPages) 页")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        
+                        Button(action: {
+                            if currentPage < engine.pdfTotalPages {
+                                currentPage += 1
+                            }
+                        }) {
+                            Image(systemName: "chevron.right")
+                        }
+                        .disabled(currentPage >= engine.pdfTotalPages || engine.isProcessing)
+                        .help("下一页")
+                    }
+                }
+            }
+            
+            // 3. 核心文件导入/关闭控制
             ToolbarItem(placement: .primaryAction) {
                 if engine.pdfFileName.isEmpty {
                     Button(action: openFileAction) {
@@ -97,7 +144,9 @@ struct ContentView: View {
                     .help("清除当前加载的文件及元数据")
                 }
             }
-            
+        }
+        .onChange(of: currentPage) { oldValue, newValue in
+            pageInput = String(newValue)
         }
         // 响应菜单/通知广播
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenFileNotification"))) { _ in
@@ -141,6 +190,7 @@ struct ContentView: View {
         txtFileURL = nil
         mdFileURL = nil
         currentPage = 1
+        pageInput = "1"
     }
     
     /// 触发物理分段提取文字

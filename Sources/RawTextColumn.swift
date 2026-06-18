@@ -19,10 +19,11 @@ struct RawTextColumn: View {
             // 顶栏大标题区
             HStack {
                 Image(systemName: "doc.text.magnifyingglass")
-                    .foregroundColor(.accentColor)
+                    .foregroundStyle(Color.accentColor)
                 Text("原始识字区")
-                    .font(.system(.headline, design: .rounded))
-                    .foregroundColor(.primary)
+                    .font(.headline)
+                    .fontDesign(.rounded)
+                    .foregroundStyle(.primary)
                 Spacer()
                 if engine.isProcessing {
                     ProgressView()
@@ -44,7 +45,7 @@ struct RawTextColumn: View {
                         
                         Text(engine.currentStatus)
                             .font(.system(.callout))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, Theme.Spacing.xl)
                     }
@@ -54,15 +55,15 @@ struct RawTextColumn: View {
                     VStack(spacing: Theme.Spacing.md) {
                         Image(systemName: "doc.text")
                             .font(.system(size: 44))
-                            .foregroundColor(.secondary.opacity(0.5))
+                            .foregroundStyle(.secondary.opacity(0.5))
                         
                         Text("等待提取文本")
                             .font(.system(.body, design: .rounded).weight(.semibold))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                         
                         Text("请在下方点击“提取文字”开始识别")
                             .font(.system(.caption))
-                            .foregroundColor(.secondary.opacity(0.8))
+                            .foregroundStyle(.secondary.opacity(0.8))
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -79,47 +80,19 @@ struct RawTextColumn: View {
             
             // 底部操作与页码翻页联动栏
             VStack(spacing: Theme.Spacing.md) {
-                if engine.pdfTotalPages > 0 {
-                    // 自适应分页控制器
-                    HStack(spacing: Theme.Spacing.lg) {
-                        Button(action: {
-                            if currentPage > 1 {
-                                currentPage -= 1
-                            }
-                        }) {
-                            Image(systemName: "chevron.left")
-                        }
-                        .disabled(currentPage <= 1 || engine.isProcessing)
-                        
-                        Text("第 \(currentPage) / \(engine.pdfTotalPages) 页")
-                            .font(.system(.body, design: .rounded).weight(.semibold))
-                            .frame(minWidth: 90)
-                        
-                        Button(action: {
-                            if currentPage < engine.pdfTotalPages {
-                                currentPage += 1
-                            }
-                        }) {
-                            Image(systemName: "chevron.right")
-                        }
-                        .disabled(currentPage >= engine.pdfTotalPages || engine.isProcessing)
-                    }
-                }
-                
-                // 操作与导出按钮（与 AI 优化区做镜像对称设计）
                 if engine.isProcessing {
                     // 提取中，显示停止按钮和进度
                     HStack {
                         Text(engine.currentStatus)
                             .font(.system(.caption))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                         Spacer()
                         Button(action: {
                             engine.cancelPDFExtraction()
                         }) {
                             Text("停止提取")
-                                .foregroundColor(.red)
+                                .foregroundStyle(.red)
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal, 10)
@@ -144,7 +117,7 @@ struct RawTextColumn: View {
                         .padding(.vertical, 6)
                         .padding(.horizontal, 8)
                         .background(engine.pdfFileName.isEmpty ? Color.accentColor.opacity(0.1) : Color.accentColor)
-                        .foregroundColor(.white)
+                        .foregroundStyle(.white)
                         .cornerRadius(8)
                         .scaleEffect(isHoveredStart ? 1.02 : 1.0)
                         .onHover { h in isHoveredStart = h }
@@ -160,7 +133,7 @@ struct RawTextColumn: View {
                         .padding(.vertical, 6)
                         .padding(.horizontal, 8)
                         .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
-                        .foregroundColor(.primary)
+                        .foregroundStyle(.primary)
                         .cornerRadius(8)
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)

@@ -14,7 +14,8 @@ struct PDFPreviewView: NSViewRepresentable {
     func makeNSView(context: Context) -> PDFView {
         let pdfView = PDFView()
         pdfView.autoScales = true
-        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayMode = .singlePage
+        pdfView.displayDirection = .horizontal
         pdfView.displayBox = .mediaBox
         
         // 监听系统 PDFView 页面滚动改变通知
@@ -29,6 +30,9 @@ struct PDFPreviewView: NSViewRepresentable {
     }
     
     func updateNSView(_ nsView: PDFView, context: Context) {
+        // 双向重绑定 parent
+        context.coordinator.parent = self
+        
         // 1. 只有在 document 不一致时更新，防止重复设置重置滚动位置
         if nsView.document !== pdfDocument {
             nsView.document = pdfDocument

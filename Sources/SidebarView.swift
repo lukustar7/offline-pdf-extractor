@@ -374,7 +374,7 @@ struct SidebarView: View {
                                     TextField("http://localhost:11434/v1", text: $aiEngine.aiApiBaseUrl)
                                         .textFieldStyle(.roundedBorder)
                                         .disabled(aiEngine.isAIProcessing)
-                                        .onChange(of: aiEngine.aiApiBaseUrl) { newValue in
+                                        .onChange(of: aiEngine.aiApiBaseUrl) { oldValue, newValue in
                                             aiEngine.checkURLSafety(urlString: newValue)
                                         }
                                         .accessibilityLabel("AI 服务端点 URL 输入框")
@@ -535,10 +535,10 @@ struct SidebarView: View {
         }
         .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
         // 绑定 onChange，在卡片样式发生交互点击时，后台无缝自动更新底层引擎字段
-        .onChange(of: watermarkStyle) { _ in
+        .onChange(of: watermarkStyle) { oldValue, newValue in
             updateEngineSettings()
         }
-        .onChange(of: contentType) { _ in
+        .onChange(of: contentType) { oldValue, newValue in
             updateEngineSettings()
         }
         .onAppear {

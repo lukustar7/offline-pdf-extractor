@@ -29,10 +29,10 @@ struct AITextColumn: View {
             // 顶栏大标题区
             HStack {
                 Image(systemName: "sparkles")
-                    .foregroundColor(.purple)
+                    .foregroundStyle(.purple)
                 Text("AI 优化区")
                     .font(.system(.headline, design: .rounded))
-                    .foregroundColor(.primary)
+                    .foregroundStyle(.primary)
                 Spacer()
                 if aiEngine.isAIProcessing {
                     ProgressView()
@@ -55,7 +55,7 @@ struct AITextColumn: View {
                         
                         Text(aiEngine.aiProgressStatus)
                             .font(.system(.callout))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, Theme.Spacing.xl)
                     }
@@ -65,15 +65,15 @@ struct AITextColumn: View {
                     VStack(spacing: Theme.Spacing.md) {
                         Image(systemName: "sparkles")
                             .font(.system(size: 44))
-                            .foregroundColor(.purple.opacity(0.4))
+                            .foregroundStyle(.purple.opacity(0.4))
                         
                         Text("等待 AI 净化优化")
                             .font(.system(.body, design: .rounded).weight(.semibold))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                         
                         Text("请在下方点击按钮启动大模型净化校对")
                             .font(.system(.caption))
-                            .foregroundColor(.secondary.opacity(0.8))
+                            .foregroundStyle(.secondary.opacity(0.8))
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -95,14 +95,14 @@ struct AITextColumn: View {
                     HStack {
                         Text(aiEngine.aiProgressStatus)
                             .font(.system(.caption))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                         Spacer()
                         Button(action: {
                             aiEngine.cancelAIProcessing()
                         }) {
                             Text("中止净化")
-                                .foregroundColor(.red)
+                                .foregroundStyle(.red)
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal, 10)
@@ -127,7 +127,7 @@ struct AITextColumn: View {
                             .padding(.vertical, 6)
                             .padding(.horizontal, 8)
                             .background(extractorEngine.extractedPagesText.isEmpty ? Color.purple.opacity(0.1) : Color.purple)
-                            .foregroundColor(.white)
+                            .foregroundStyle(.white)
                             .cornerRadius(8)
                             .scaleEffect(isHoveredAll ? 1.02 : 1.0)
                             .onHover { h in isHoveredAll = h }
@@ -143,7 +143,7 @@ struct AITextColumn: View {
                             .padding(.vertical, 6)
                             .padding(.horizontal, 8)
                             .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
-                            .foregroundColor(.primary)
+                            .foregroundStyle(.primary)
                             .cornerRadius(8)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 8)
@@ -156,7 +156,7 @@ struct AITextColumn: View {
                         if !extractorEngine.extractedPagesText.isEmpty {
                             Text("💡 优化采用“一页一送”分片策略，每次仅请求单页文本，完美适配本地小模型，规避显存截断与记忆衰退。")
                                 .font(.system(.caption2))
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(.secondary)
                                 .lineSpacing(2)
                                 .padding(.top, 2)
                         }

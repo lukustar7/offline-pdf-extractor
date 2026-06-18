@@ -1,6 +1,7 @@
 import SwiftUI
 
 // MARK: - 本地 AI 净化服务引擎 (纯 Swift 类解耦版)
+@MainActor
 class AIProcessingEngine: ObservableObject {
     @Published var isAIProcessing = false
     @Published var aiProgressStatus: String = ""
@@ -98,18 +99,14 @@ class AIProcessingEngine: ObservableObject {
     func checkURLSafety(urlString: String) {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if trimmed.isEmpty {
-            DispatchQueue.main.async { [weak self] in
-                self?.isExternalURLWarning = false
-            }
+            self.isExternalURLWarning = false
             return
         }
         
         // 提取 URL 的 host 部分用于精确匹配（同时兼容 http/https）
         guard let urlComponents = URLComponents(string: trimmed),
               let host = urlComponents.host else {
-            DispatchQueue.main.async { [weak self] in
-                self?.isExternalURLWarning = true
-            }
+            self.isExternalURLWarning = true
             return
         }
         
@@ -129,23 +126,20 @@ class AIProcessingEngine: ObservableObject {
             }
         }
                       
-        DispatchQueue.main.async { [weak self] in
-            self?.isExternalURLWarning = !isLocal
-        }
+        self.isExternalURLWarning = !isLocal
     }
     
     /// 拉取本地 AI 运行端点提供的可用模型列表
     func fetchAIModels() {
-        // 发起请求前也跑一次安全校验
         checkURLSafety(urlString: aiApiBaseUrl)
         
         guard let url = URL(string: aiApiBaseUrl + "/models") else {
-            self.updateAIProgressStatus("❌ 无效的 API 服务地址")
+            self.aiProgressStatus = "❌ 无效的 API 服务地址"
             return
         }
         
         isAIFetchingModels = true
-        updateAIProgressStatus("正在获取模型列表...")
+        aiProgressStatus = "正在获取模型列表..."
         
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -155,52 +149,40 @@ class AIProcessingEngine: ObservableObject {
             request.addValue("Bearer \(aiApiKey)", forHTTPHeaderField: "Authorization")
         }
         
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { return }
-            
-            DispatchQueue.main.async { [weak self] in
-                self?.isAIFetchingModels = false
-            }
-            
-            if let error = error {
-                self.updateAIProgressStatus("❌ 连接失败: \(error.localizedDescription)")
-                return
-            }
-            
-            guard let data = data else {
-                self.updateAIProgressStatus("❌ 服务器未返回数据")
-                return
-            }
-            
+        Task {
             do {
-                let decoded = try JSONDecoder().decode(AIModelResponse.self, from: data)
-                let modelIds = decoded.data.map { $0.id }
-                
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    self.aiModels = modelIds
-                    if !modelIds.isEmpty && (self.aiSelectedModel.isEmpty || !modelIds.contains(self.aiSelectedModel)) {
-                        self.aiSelectedModel = modelIds.first ?? ""
-                    }
-                    self.updateAIProgressStatus("✅ 成功拉取到 \(modelIds.count) 个本地模型")
-                }
+                let (data, _) = try await URLSession.shared.data(for: request)
+                try self.parseAndApplyModels(data: data)
             } catch {
-                if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                   let dataArray = json["data"] as? [[String: Any]] {
-                    let ids = dataArray.compactMap { $0["id"] as? String }
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        self.aiModels = ids
-                        if !ids.isEmpty && (self.aiSelectedModel.isEmpty || !ids.contains(self.aiSelectedModel)) {
-                            self.aiSelectedModel = ids.first ?? ""
-                        }
-                        self.updateAIProgressStatus("✅ 成功获取 \(ids.count) 个模型")
-                    }
-                } else {
-                    self.updateAIProgressStatus("❌ 无法解析模型列表，请确认服务是否兼容 OpenAI 规范")
-                }
+                self.aiProgressStatus = "❌ 连接失败: \(error.localizedDescription)"
             }
-        }.resume()
+            self.isAIFetchingModels = false
+        }
+    }
+    
+    private func parseAndApplyModels(data: Data) throws {
+        do {
+            let decoded = try JSONDecoder().decode(AIModelResponse.self, from: data)
+            let modelIds = decoded.data.map { $0.id }
+            
+            self.aiModels = modelIds
+            if !modelIds.isEmpty && (self.aiSelectedModel.isEmpty || !modelIds.contains(self.aiSelectedModel)) {
+                self.aiSelectedModel = modelIds.first ?? ""
+            }
+            self.aiProgressStatus = "✅ 成功拉取到 \(modelIds.count) 个本地模型"
+        } catch {
+            if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+               let dataArray = json["data"] as? [[String: Any]] {
+                let ids = dataArray.compactMap { $0["id"] as? String }
+                self.aiModels = ids
+                if !ids.isEmpty && (self.aiSelectedModel.isEmpty || !ids.contains(self.aiSelectedModel)) {
+                    self.aiSelectedModel = ids.first ?? ""
+                }
+                self.aiProgressStatus = "✅ 成功获取 \(ids.count) 个模型"
+            } else {
+                self.aiProgressStatus = "❌ 无法解析模型列表，请确认服务是否兼容 OpenAI 规范"
+            }
+        }
     }
     
     /// 将提取后的正文发送给本地 AI 纠错与净化 (支持超长文本智能分片串行接力)
@@ -235,7 +217,7 @@ class AIProcessingEngine: ObservableObject {
         }
         
         if chunks.isEmpty {
-            self.updateAIProgressStatus("❌ 目标页面中没有需要净化的文本内容，请先提取文本。")
+            self.aiProgressStatus = "❌ 目标页面中没有需要净化的文本内容，请先提取文本。"
             self.isAIProcessing = false
             return
         }
@@ -257,18 +239,16 @@ class AIProcessingEngine: ObservableObject {
         guard isAIProcessing else { return }
         
         if pendingPagesToProcess.isEmpty {
-            self.updateAIProgressStatus("🎉 本地 AI 净化校对完成！")
+            self.aiProgressStatus = "🎉 本地 AI 净化校对完成！"
             saveAIResultToDisk()
-            DispatchQueue.main.async { [weak self] in
-                self?.isAIProcessing = false
-            }
+            self.isAIProcessing = false
             return
         }
         
         checkURLSafety(urlString: aiApiBaseUrl)
         
         guard let url = URL(string: aiApiBaseUrl + "/chat/completions") else {
-            self.updateAIProgressStatus("❌ 无效的 API 服务地址")
+            self.aiProgressStatus = "❌ 无效的 API 服务地址"
             self.isAIProcessing = false
             return
         }
@@ -278,7 +258,7 @@ class AIProcessingEngine: ObservableObject {
         self.aiLastCompletedChunkText = ""
         self.aiPendingOutputBuffer = ""
         
-        updateAIProgressStatus("本地 AI 正在净化第 \(next.pageIndex) 页 (进度: \(aiCurrentChunkIndex + 1) / \(aiTotalChunks) 页)...")
+        self.aiProgressStatus = "本地 AI 正在净化第 \(next.pageIndex) 页 (进度: \(aiCurrentChunkIndex + 1) / \(aiTotalChunks) 页)..."
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -306,17 +286,21 @@ class AIProcessingEngine: ObservableObject {
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
         } catch {
-            self.updateAIProgressStatus("❌ 序列化请求数据失败")
+            self.aiProgressStatus = "❌ 序列化请求数据失败"
             self.isAIProcessing = false
             return
         }
         
         let streamDelegate = AIStreamDelegate()
         streamDelegate.onDeltaReceived = { [weak self] content in
-            self?.appendDeltaText(content)
+            Task { @MainActor in
+                self?.appendDeltaText(content)
+            }
         }
         streamDelegate.onComplete = { [weak self] error in
-            self?.handlePageChunkComplete(error: error)
+            Task { @MainActor in
+                self?.handlePageChunkComplete(error: error)
+            }
         }
         self.currentStreamDelegate = streamDelegate
         
@@ -330,41 +314,38 @@ class AIProcessingEngine: ObservableObject {
     
     /// 处理单页传输完毕后的接力和落盘逻辑
     private func handlePageChunkComplete(error: Error?) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            guard self.isAIProcessing else { return }
-            
-            self.flushPendingAIText()
-            
-            self.currentAITask = nil
-            self.currentAISession?.finishTasksAndInvalidate()
-            self.currentAISession = nil
-            self.currentStreamDelegate = nil
-            
-            if let error = error as NSError? {
-                if error.code == NSURLErrorCancelled {
-                    return
-                }
-                self.updateAIProgressStatus("❌ 优化生成中断: \(error.localizedDescription)")
-                self.isAIProcessing = false
-            } else {
-                // 每页处理完后，我们把这页的最终结果 aiLastCompletedChunkText 写回 aiPagesText
-                if let pageIdx = self.currentPageIndexProcessing {
-                    self.aiPagesText[pageIdx] = self.aiLastCompletedChunkText
-                }
-                
-                // 将 memory 文本拼接，方便导出
-                let pageHeader = "\n[第 \(self.currentPageIndexProcessing ?? 0) 页]\n"
-                self.aiCompletedText += pageHeader + self.aiLastCompletedChunkText + "\n"
-                
-                let chunkToSave = self.aiLastCompletedChunkText
-                let chunkIdx = self.aiCurrentChunkIndex
-                self.appendAIResultChunkToDisk(chunkContent: chunkToSave, chunkIndex: chunkIdx)
-                
-                self.aiCurrentChunkIndex += 1
-                self.currentPageIndexProcessing = nil
-                self.processNextPageChunk(systemPrompt: self.systemPromptBackup)
+        guard self.isAIProcessing else { return }
+        
+        self.flushPendingAIText()
+        
+        self.currentAITask = nil
+        self.currentAISession?.finishTasksAndInvalidate()
+        self.currentAISession = nil
+        self.currentStreamDelegate = nil
+        
+        if let error = error as NSError? {
+            if error.code == NSURLErrorCancelled {
+                return
             }
+            self.aiProgressStatus = "❌ 优化生成中断: \(error.localizedDescription)"
+            self.isAIProcessing = false
+        } else {
+            // 每页处理完后，我们把这页的最终结果 aiLastCompletedChunkText 写回 aiPagesText
+            if let pageIdx = self.currentPageIndexProcessing {
+                self.aiPagesText[pageIdx] = self.aiLastCompletedChunkText
+            }
+            
+            // 将 memory 文本拼接，方便导出
+            let pageHeader = "\n[第 \(self.currentPageIndexProcessing ?? 0) 页]\n"
+            self.aiCompletedText += pageHeader + self.aiLastCompletedChunkText + "\n"
+            
+            let chunkToSave = self.aiLastCompletedChunkText
+            let chunkIdx = self.aiCurrentChunkIndex
+            self.appendAIResultChunkToDisk(chunkContent: chunkToSave, chunkIndex: chunkIdx)
+            
+            self.aiCurrentChunkIndex += 1
+            self.currentPageIndexProcessing = nil
+            self.processNextPageChunk(systemPrompt: self.systemPromptBackup)
         }
     }
     
@@ -373,68 +354,41 @@ class AIProcessingEngine: ObservableObject {
         // 强制递增时序 Token。所有已经在 ioQueue 线程中排队挂起的写盘任务，其持有的旧 Token 均将失效
         currentAITokenSafe = UUID()
         
-        // 确保所有 @Published 属性修改在主线程执行，防止非主线程调用时的 Data Race 崩溃
-        let cleanup = { [weak self] in
-            guard let self = self else { return }
-            self.pendingAIChunks.removeAll()
-            self.pendingPagesToProcess.removeAll()
-            self.currentPageIndexProcessing = nil
-            self.aiPendingOutputBuffer = ""
-            
-            if let task = self.currentAITask {
-                task.cancel()
-                self.currentAITask = nil
-            }
-            
-            self.currentAISession?.invalidateAndCancel()
-            self.currentAISession = nil
-            self.currentStreamDelegate = nil
-            
-            self.isAIProcessing = false
-            self.aiTxtFileURL = nil
-            self.aiMdFileURL = nil
-            self.updateAIProgressStatus("❌ 已主动取消 AI 优化净化流程。")
+        self.pendingAIChunks.removeAll()
+        self.pendingPagesToProcess.removeAll()
+        self.currentPageIndexProcessing = nil
+        self.aiPendingOutputBuffer = ""
+        
+        if let task = self.currentAITask {
+            task.cancel()
+            self.currentAITask = nil
         }
         
-        if Thread.isMainThread {
-            cleanup()
-        } else {
-            DispatchQueue.main.async(execute: cleanup)
-        }
+        self.currentAISession?.invalidateAndCancel()
+        self.currentAISession = nil
+        self.currentStreamDelegate = nil
+        
+        self.isAIProcessing = false
+        self.aiTxtFileURL = nil
+        self.aiMdFileURL = nil
+        self.aiProgressStatus = "❌ 已主动取消 AI 优化净化流程。"
     }
     
     /// 彻底清除所有已保存的 AI 页码缓存与导出文件路径 (当关闭 PDF 文件时调用)
     func clear() {
         cancelAIProcessing()
-        let mainClear = { [weak self] in
-            guard let self = self else { return }
-            self.aiPagesText = [:]
-            self.aiResultText = ""
-            self.aiCompletedText = ""
-        }
-        if Thread.isMainThread {
-            mainClear()
-        } else {
-            DispatchQueue.main.async(execute: mainClear)
-        }
+        self.aiPagesText = [:]
+        self.aiResultText = ""
+        self.aiCompletedText = ""
     }
     
-    private func updateAIProgressStatus(_ status: String) {
-        DispatchQueue.main.async { [weak self] in
-            self?.aiProgressStatus = status
-        }
-    }
-    
-    /// 节流刷新：强制分发到主线程，杜绝多线程读写 aiPendingOutputBuffer 导致崩溃 (Data Race Fix)
+    /// 节流刷新：在 @MainActor 上更新数据
     private func appendDeltaText(_ text: String) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.aiPendingOutputBuffer += text
-            let now = Date()
-            if now.timeIntervalSince(self.lastUIUpdateTime) > 0.1 {
-                self.flushPendingAIText()
-                self.lastUIUpdateTime = now
-            }
+        self.aiPendingOutputBuffer += text
+        let now = Date()
+        if now.timeIntervalSince(self.lastUIUpdateTime) > 0.1 {
+            self.flushPendingAIText()
+            self.lastUIUpdateTime = now
         }
     }
     
@@ -447,7 +401,7 @@ class AIProcessingEngine: ObservableObject {
         self.aiLastCompletedChunkText += textToAppend
         self.aiResultText = self.aiCompletedText + self.aiLastCompletedChunkText
         
-        // 同步更新当前正在处理的物理页的 AI 净化文本缓存
+        // 同步更新当前正在处理 of 物理页的 AI 净化文本缓存
         if let pageIdx = currentPageIndexProcessing {
             self.aiPagesText[pageIdx] = (self.aiPagesText[pageIdx] ?? "") + textToAppend
         }
