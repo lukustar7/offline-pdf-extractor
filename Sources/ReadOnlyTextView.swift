@@ -1,7 +1,7 @@
 import SwiftUI
 
 // MARK: - 只读文本展示视图 (NSTextView 包装)
-// 支持文本选中和复制，但禁止编辑，避免 TextEditor 的假编辑困惑 (P1-6 修复)
+// 支持文本选中和复制，但禁止编辑，避免 TextEditor 带来的可编辑误导。
 struct ReadOnlyTextView: NSViewRepresentable {
     let text: String
     

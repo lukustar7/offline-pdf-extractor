@@ -1,31 +1,9 @@
 import SwiftUI
 
-// MARK: - 水印风格枚举
-enum WatermarkStyle: String, CaseIterable, Identifiable, Codable {
-    case none = "无水印"
-    case electronic = "活字水印"
-    case scan = "扫描件水印"
-    
-    var id: String { self.rawValue }
-}
-
-// MARK: - 内容版式类型枚举
-enum ContentType: String, CaseIterable, Identifiable, Codable {
-    case electronic = "电子文本"
-    case scan = "扫描图像"
-    
-    var id: String { self.rawValue }
-}
-
 // MARK: - 左侧控制侧边栏视图 (macOS 原生 Inspector 风格)
 struct SidebarView: View {
     @ObservedObject var engine: PDFExtractorEngine
     @ObservedObject var aiEngine: AIProcessingEngine
-    
-    @Binding var resultText: String
-    @Binding var txtFileURL: URL?
-    @Binding var mdFileURL: URL?
-    @Binding var selectedTab: Int
     
     // 使用 @AppStorage 对用户偏好进行持久化保存，防止重启丢失配置
     @AppStorage("extractionMode") private var extractionMode: ExtractionMode = .smart
@@ -36,23 +14,13 @@ struct SidebarView: View {
     @AppStorage("pageRangeString") private var pageRangeString = ""
     @AppStorage("customWatermarks") private var customWatermarks = ""
     
-    // 映射至 SettingSelectorCard 小方块所使用的新 AppStorage 变量
-    @AppStorage("watermarkStyle") private var watermarkStyle: WatermarkStyle = .electronic
-    @AppStorage("contentType") private var contentType: ContentType = .electronic
-    @AppStorage("extractImages") private var extractImages = false
+    // 用户真正理解的三类 PDF 场景，驱动底层提取与去水印管线。
+    @AppStorage("processingScenario") private var processingScenario: PDFProcessingScenario = .electronicTextWithTextWatermark
     
     @AppStorage("aiShowChanges") private var aiShowChanges = false
     @AppStorage("aiPassWatermarks") private var aiPassWatermarks = false
     
-    @AppStorage("systemPrompt") private var systemPrompt = """
-    你是一个极为严谨的文本排版、错别字纠正与 Markdown 转换助手。你将接收一段由 OCR 引擎从扫描件中识别出的原始文本。
-    请执行以下处理：
-    1. 保持原文的主体段落结构与逻辑含义完全不变，切勿重写、缩写或扩写正文内容。
-    2. 修复文本中由于 OCR 识别误差导致的可能错字、别字（例如把“而且”识别为“面且”，把“我们”识别为“我门”）。
-    3. 智能修复不合理的强行换行：只合并由于 OCR 扫描在行尾造成的生硬硬断行，必须严格保留原文中所有的自然段落结构。
-    4. 【Markdown 格式化】：智能分析文本中的标题、段落层级。对于明显的章节标题、小标题、列表项等，在输出中将其规范化转换为 Markdown 标记格式（如章节大标题前加 # 或 ##，列表项前加 - 等），以提高排版可读性。
-    5. 只输出处理纠正且 Markdown 规范化后的最终纯净文本，严禁夹带任何多余的开场白、Markdown 代码块围栏（如 ```markdown）或总结语！
-    """
+    @AppStorage("systemPrompt") private var systemPrompt = AIPromptBuilder.defaultSystemPrompt
     
     // 侧边栏当前激活的 Tab：0 -> 提取设置, 1 -> AI 设置
     @State private var activeSidebarTab = 0
@@ -64,7 +32,7 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             // macOS 侧边栏属性卡片顶部标题，使用标准 Source List Group Header 风格
             HStack {
-                Text("配置控制面板")
+                Text("处理设置")
                     .font(.system(.caption, design: .default).weight(.bold))
                     .foregroundColor(.secondary)
                 Spacer()
@@ -96,7 +64,7 @@ struct SidebarView: View {
                                 .font(.system(.body))
                             
                             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                                Text("加载 PDF 失败")
+                                Text("需要处理的问题")
                                     .font(.system(.caption, design: .default).weight(.bold))
                                     .foregroundColor(.red)
                                 Text(error)
@@ -141,10 +109,6 @@ struct SidebarView: View {
                                 onClear: {
                                     engine.clear()
                                     aiEngine.clear()
-                                    resultText = ""
-                                    txtFileURL = nil
-                                    mdFileURL = nil
-                                    selectedTab = 0
                                 }
                             )
                             .padding(.top, Theme.Spacing.sm)
@@ -154,107 +118,64 @@ struct SidebarView: View {
                                 DisclosureGroup(isExpanded: $isSettingsExpanded) {
                                     VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                                         
-                                        // 1. 水印样式小方块选择器
+                                        // 1. 三类真实 PDF 场景选择器
                                         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                                            Text("水印样式")
+                                            Text("PDF 场景")
                                                 .font(.system(.caption, design: .default).weight(.semibold))
                                                 .foregroundColor(.secondary)
                                             
-                                            HStack(spacing: Theme.Spacing.sm) {
+                                            VStack(spacing: Theme.Spacing.sm) {
                                                 SettingSelectorCard(
-                                                    title: "纯净无印",
-                                                    subTitle: "直接读取，正文 0 误伤",
-                                                    isSelected: watermarkStyle == .none,
-                                                    action: { watermarkStyle = .none }
+                                                    title: PDFProcessingScenario.electronicTextWithTextWatermark.title,
+                                                    subTitle: PDFProcessingScenario.electronicTextWithTextWatermark.subtitle,
+                                                    isSelected: processingScenario == .electronicTextWithTextWatermark,
+                                                    systemImage: "doc.text",
+                                                    themeColor: .blue,
+                                                    action: { processingScenario = .electronicTextWithTextWatermark }
                                                 )
                                                 
                                                 SettingSelectorCard(
-                                                    title: "活字水印",
-                                                    subTitle: "过滤矢量水印，精度高",
-                                                    isSelected: watermarkStyle == .electronic,
-                                                    action: { watermarkStyle = .electronic }
+                                                    title: PDFProcessingScenario.scannedTextWithTextWatermark.title,
+                                                    subTitle: PDFProcessingScenario.scannedTextWithTextWatermark.subtitle,
+                                                    isSelected: processingScenario == .scannedTextWithTextWatermark,
+                                                    systemImage: "doc.viewfinder",
+                                                    themeColor: .indigo,
+                                                    action: { processingScenario = .scannedTextWithTextWatermark }
                                                 )
                                                 
                                                 SettingSelectorCard(
-                                                    title: "扫描件水印",
-                                                    subTitle: "物理擦除水印并 OCR",
-                                                    isSelected: watermarkStyle == .scan,
-                                                    action: { watermarkStyle = .scan }
+                                                    title: PDFProcessingScenario.fullyScanned.title,
+                                                    subTitle: PDFProcessingScenario.fullyScanned.subtitle,
+                                                    isSelected: processingScenario == .fullyScanned,
+                                                    systemImage: "scanner",
+                                                    themeColor: .orange,
+                                                    action: { processingScenario = .fullyScanned }
                                                 )
                                             }
                                             
-                                            // 动态警示气泡
-                                            VStack(alignment: .leading, spacing: 0) {
-                                                switch watermarkStyle {
-                                                case .none:
-                                                    Text("💡 PDF 无水印。直接调用原生文字通道，提取精度 100%，正文 0 误伤。")
-                                                        .foregroundColor(.blue)
-                                                case .electronic:
-                                                    Text("💡 电子版水印。系统将精准过滤隐藏的 PDF 水印字符节点，提取精度近乎 100%，正文 0 误伤。")
-                                                        .foregroundColor(.green)
-                                                case .scan:
-                                                    Text("⚠️ 扫描件水印。水印与文字融合于图片背景。系统将调用像素擦除并重新执行 OCR 识字，若水印与正文重叠，可能导致重叠处文字误伤，推荐开启右侧‘AI 净化’进行自动还原。")
-                                                        .foregroundColor(.orange)
-                                                }
+                                            HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+                                                Image(systemName: scenarioSymbolName)
+                                                    .font(.system(.callout).weight(.semibold))
+                                                    .foregroundColor(scenarioTintColor)
+                                                    .frame(width: 18)
+                                                Text(processingScenario.statusDescription)
+                                                    .font(.system(.caption2))
+                                                    .foregroundColor(.secondary)
+                                                    .lineSpacing(2)
                                             }
-                                            .font(.system(.caption2))
-                                            .lineSpacing(2)
                                             .padding(Theme.Spacing.sm)
                                             .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(
+                                            .background(scenarioTintColor.opacity(0.08))
+                                            .cornerRadius(8)
+                                            .overlay(
                                                 RoundedRectangle(cornerRadius: 8)
-                                                    .fill(
-                                                        watermarkStyle == .none ? Color.blue.opacity(0.06) :
-                                                        (watermarkStyle == .electronic ? Color.green.opacity(0.06) : Color.orange.opacity(0.06))
-                                                    )
+                                                    .stroke(scenarioTintColor.opacity(0.16), lineWidth: 1)
                                             )
                                             .padding(.top, Theme.Spacing.xs)
                                         }
                                         .padding(.vertical, Theme.Spacing.xs)
                                         
-                                        // 2. 正文样式小方块选择器
-                                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                                            Text("正文样式")
-                                                .font(.system(.caption, design: .default).weight(.semibold))
-                                                .foregroundColor(.secondary)
-                                            
-                                            HStack(spacing: Theme.Spacing.sm) {
-                                                SettingSelectorCard(
-                                                    title: "电子文本",
-                                                    subTitle: "排版规范，可直接复制",
-                                                    isSelected: contentType == .electronic,
-                                                    action: { contentType = .electronic }
-                                                )
-                                                
-                                                SettingSelectorCard(
-                                                    title: "扫描图像",
-                                                    subTitle: "图片/照片组成，需 OCR",
-                                                    isSelected: contentType == .scan,
-                                                    action: { contentType = .scan }
-                                                )
-                                            }
-                                        }
-                                        .padding(.vertical, Theme.Spacing.xs)
-                                        
-                                        // 3. 保留正文插图勾选框
-                                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                                            Toggle("保留正文插图 (提取并导出)", isOn: $extractImages)
-                                                .toggleStyle(.checkbox)
-                                                .disabled(contentType == .scan)
-                                            
-                                            if contentType == .scan {
-                                                Text("💡 扫描件暂不支持独立插图提取。")
-                                                    .font(.system(.caption2))
-                                                    .foregroundColor(.secondary.opacity(0.8))
-                                            } else {
-                                                Text("💡 仅限电子版 PDF，系统会自动将提取的图片导出到目标文件夹。（尚在研发中）")
-                                                    .font(.system(.caption2))
-                                                    .foregroundColor(.secondary.opacity(0.8))
-                                            }
-                                        }
-                                        .padding(.vertical, Theme.Spacing.xs)
-                                        
-                                        // 4. 页码范围输入框
+                                        // 2. 页码范围输入框
                                         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                                             Text("指定提取页码范围 (如 1-5, 8, 10-12)")
                                                 .font(.system(.caption2, design: .default).weight(.medium))
@@ -269,13 +190,12 @@ struct SidebarView: View {
                                         Toggle("忽略字母大小写", isOn: $ignoreCase)
                                             .toggleStyle(.checkbox)
                                         
-                                        // 原本的底层图像区域擦除微调
-                                        if watermarkStyle != .none {
+                                        if processingScenario == .scannedTextWithTextWatermark {
                                             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                                                Toggle("擦除图片中的水印区域", isOn: $eraseImageWatermark)
+                                                Toggle("高级：OCR 前遮盖电子水印区域", isOn: $eraseImageWatermark)
                                                     .toggleStyle(.checkbox)
                                                 
-                                                Text("💡 开启该选项会在 OCR 前对水印覆盖的像素点进行强制白化处理，有效避免水印干扰识字。")
+                                                Text("默认关闭。只有当电子水印本身严重干扰 OCR 时再尝试；如果水印压住正文，遮盖会同时抹掉下方正文。")
                                                     .font(.system(.caption2))
                                                     .foregroundColor(.secondary)
                                                     .lineSpacing(2)
@@ -293,73 +213,70 @@ struct SidebarView: View {
                                 Divider()
                                     .padding(.horizontal, Theme.Spacing.xs)
                                 
-                                // 5. 水印管理 (只在非“纯净无印”模式下展示，契合用户对于无水印隐藏管理区的交互简化)
-                                if watermarkStyle != .none {
-                                    DisclosureGroup(isExpanded: $isWatermarkExpanded) {
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            if engine.watermarkCandidates.isEmpty {
-                                                Text("未检测到高频活字水印。")
-                                                    .font(.subheadline)
-                                                    .foregroundColor(.secondary)
-                                                    .padding(.vertical, Theme.Spacing.xs)
-                                            } else {
-                                                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                                                    Text("高频疑似水印词:")
-                                                        .font(.system(.caption, design: .default).weight(.semibold))
-                                                        .foregroundColor(.secondary)
-                                                    Text("💡 以下词汇因在多页中重复出现，系统初步判定其为水印。如果其中包含正文字词，请取消勾选以防止误删。")
-                                                        .font(.system(.caption2))
-                                                        .foregroundColor(.secondary)
-                                                        .lineSpacing(2)
-                                                }
-                                                .padding(.bottom, Theme.Spacing.xs)
-                                                
-                                                ForEach($engine.watermarkCandidates) { $candidate in
-                                                    Toggle(isOn: $candidate.isSelected) {
-                                                        HStack {
-                                                            Text(candidate.text)
-                                                                .font(.system(.body).weight(.medium))
-                                                                .lineLimit(1)
-                                                            Spacer()
-                                                            Text("\(candidate.occurrenceCount) 页")
-                                                                .font(.system(.caption2))
-                                                                .foregroundColor(.secondary)
-                                                        }
-                                                    }
-                                                    .toggleStyle(.checkbox)
-                                                }
-                                            }
-                                            
-                                            Divider()
+                                DisclosureGroup(isExpanded: $isWatermarkExpanded) {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        if engine.watermarkCandidates.isEmpty {
+                                            Text("未检测到高频电子水印词。全扫描件可在下方手动添加 OCR 后需要过滤的水印残留。")
+                                                .font(.subheadline)
+                                                .foregroundColor(.secondary)
                                                 .padding(.vertical, Theme.Spacing.xs)
-                                            
+                                        } else {
                                             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                                                Text("手动添加过滤词 (逗号或换行隔开):")
-                                                    .font(.system(.caption2, design: .default).weight(.medium))
+                                                Text("高频疑似水印词")
+                                                    .font(.system(.caption, design: .default).weight(.semibold))
                                                     .foregroundColor(.secondary)
-                                                
-                                                TextEditor(text: $customWatermarks)
-                                                    .font(.system(.body, design: .default))
-                                                    .frame(height: 50)
-                                                    .padding(Theme.Spacing.xs)
-                                                    .background(Color(nsColor: .textBackgroundColor))
-                                                    .cornerRadius(6)
-                                                    .overlay(
-                                                        RoundedRectangle(cornerRadius: 6)
-                                                            .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                                                    )
-                                                    .accessibilityLabel("手动添加过滤词编辑框")
+                                                Text("这些词在多页重复出现。若其中有正文内容，请取消勾选，避免误删。")
+                                                    .font(.system(.caption2))
+                                                    .foregroundColor(.secondary)
+                                                    .lineSpacing(2)
+                                            }
+                                            .padding(.bottom, Theme.Spacing.xs)
+                                            
+                                            ForEach($engine.watermarkCandidates) { $candidate in
+                                                Toggle(isOn: $candidate.isSelected) {
+                                                    HStack {
+                                                        Text(candidate.text)
+                                                            .font(.system(.body).weight(.medium))
+                                                            .lineLimit(1)
+                                                        Spacer()
+                                                        Text("\(candidate.occurrenceCount) 页")
+                                                            .font(.system(.caption2))
+                                                            .foregroundColor(.secondary)
+                                                    }
+                                                }
+                                                .toggleStyle(.checkbox)
                                             }
                                         }
-                                        .padding(.leading, Theme.Spacing.md)
-                                        .padding(.vertical, Theme.Spacing.sm)
-                                    } label: {
-                                        Label("活字水印过滤管理", systemImage: "tag")
-                                            .font(.system(.body, design: .default).weight(.bold))
-                                            .foregroundColor(.primary)
+                                        
+                                        Divider()
+                                            .padding(.vertical, Theme.Spacing.xs)
+                                        
+                                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                            Text("手动添加过滤词 (逗号或换行隔开)")
+                                                .font(.system(.caption2, design: .default).weight(.medium))
+                                                .foregroundColor(.secondary)
+                                            
+                                            TextEditor(text: $customWatermarks)
+                                                .font(.system(.body, design: .default))
+                                                .frame(height: 50)
+                                                .padding(Theme.Spacing.xs)
+                                                .background(Color(nsColor: .textBackgroundColor))
+                                                .cornerRadius(6)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 6)
+                                                        .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+                                                )
+                                                .accessibilityLabel("手动添加过滤词编辑框")
+                                        }
                                     }
-                                    .transition(.opacity)
+                                    .padding(.leading, Theme.Spacing.md)
+                                    .padding(.vertical, Theme.Spacing.sm)
+                                } label: {
+                                    Label("水印词管理", systemImage: "tag")
+                                        .font(.system(.body, design: .default).weight(.bold))
+                                        .foregroundColor(.primary)
                                 }
+                                .transition(.opacity)
                             }
                         }
                     } else {
@@ -384,7 +301,7 @@ struct SidebarView: View {
                                             Image(systemName: "exclamationmark.triangle.fill")
                                                 .foregroundColor(.red)
                                                 .font(.system(.caption2))
-                                            Text("⚠️ 警示：配置了外部公网 API 地址，您的数据存在泄露风险！")
+                                            Text("警示：配置了外部公网 API 地址，您的数据存在泄露风险。")
                                                 .font(.system(.caption2))
                                                 .foregroundColor(.red)
                                                 .lineLimit(2)
@@ -468,7 +385,7 @@ struct SidebarView: View {
                                             VStack(alignment: .leading, spacing: 2) {
                                                 Text("要求 AI 输出修改留痕")
                                                     .font(.system(.caption, design: .default).weight(.medium))
-                                                Text("开启后输出留痕括号，建议 14B/32B 以上本地强心智模型使用。")
+                                                Text("开启后输出留痕括号，建议参数量较大的本地模型使用。")
                                                     .font(.system(size: 9))
                                                     .foregroundColor(.secondary)
                                             }
@@ -534,11 +451,8 @@ struct SidebarView: View {
             }
         }
         .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
-        // 绑定 onChange，在卡片样式发生交互点击时，后台无缝自动更新底层引擎字段
-        .onChange(of: watermarkStyle) { oldValue, newValue in
-            updateEngineSettings()
-        }
-        .onChange(of: contentType) { oldValue, newValue in
+        // 绑定 onChange，让场景卡直接驱动底层提取通道。
+        .onChange(of: processingScenario) { oldValue, newValue in
             updateEngineSettings()
         }
         .onAppear {
@@ -546,24 +460,32 @@ struct SidebarView: View {
         }
     }
     
-    /// 双向映射逻辑：在用户点击小方块卡片交互时，后台智能重置底层引擎去水印和提取通道选项
+    private var scenarioTintColor: Color {
+        switch processingScenario {
+        case .electronicTextWithTextWatermark:
+            return .blue
+        case .scannedTextWithTextWatermark:
+            return .indigo
+        case .fullyScanned:
+            return .orange
+        }
+    }
+    
+    private var scenarioSymbolName: String {
+        switch processingScenario {
+        case .electronicTextWithTextWatermark:
+            return "doc.text"
+        case .scannedTextWithTextWatermark:
+            return "doc.viewfinder"
+        case .fullyScanned:
+            return "scanner"
+        }
+    }
+    
+    /// 场景映射逻辑：用户选择真实 PDF 类型后，自动写入底层提取管线。
     private func updateEngineSettings() {
-        switch watermarkStyle {
-        case .none:
-            enableWatermarkFilter = false
-        case .electronic:
-            enableWatermarkFilter = true
-            watermarkRemovalMode = .modeA
-        case .scan:
-            enableWatermarkFilter = true
-            watermarkRemovalMode = .modeC
-        }
-        
-        switch contentType {
-        case .electronic:
-            extractionMode = .textOnly
-        case .scan:
-            extractionMode = .ocrOnly
-        }
+        extractionMode = processingScenario.extractionMode
+        watermarkRemovalMode = processingScenario.watermarkRemovalMode
+        enableWatermarkFilter = processingScenario.enableWatermarkFilter
     }
 }

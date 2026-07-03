@@ -3,7 +3,7 @@
 # 确保脚本发生任何错误时直接退出
 set -e
 
-echo "=== 开始编译并打包 macOS PDF去水印文字提取工具 (v0.2.0) ==="
+echo "=== 开始编译并打包 macOS PDF去水印文字提取工具 (v0.3.0) ==="
 
 # 1. 定义应用名称和目录结构
 APP_NAME="PDF文字提取"
@@ -11,6 +11,13 @@ APP_DIR="${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+MODULE_CACHE_DIR="${TMPDIR:-/tmp}/pdfextractor-module-cache"
+ICON_BACKUP_PATH=""
+
+if [ -f "${RESOURCES_DIR}/AppIcon.icns" ]; then
+    ICON_BACKUP_PATH="${TMPDIR:-/tmp}/pdfextractor-AppIcon.icns"
+    cp "${RESOURCES_DIR}/AppIcon.icns" "${ICON_BACKUP_PATH}"
+fi
 
 # 2. 清理历史构建产物
 echo "清理历史构建..."
@@ -23,10 +30,14 @@ rm -f AppIcon.icns
 echo "创建 App 目录结构..."
 mkdir -p "${MACOS_DIR}"
 mkdir -p "${RESOURCES_DIR}"
+mkdir -p "${MODULE_CACHE_DIR}"
 
-# 4. 图标生成逻辑 (sips + iconutil)
-if [ -f "app_icon.png" ]; then
-    echo "检测到原始图标文件 app_icon.png，正在自动生成 macOS 官方图标包 AppIcon.icns..."
+# 4. 图标打包逻辑
+if [ -n "${ICON_BACKUP_PATH}" ] && [ -f "${ICON_BACKUP_PATH}" ]; then
+    cp "${ICON_BACKUP_PATH}" "${RESOURCES_DIR}/AppIcon.icns"
+    echo "已复用现有 AppIcon.icns。"
+elif [ -f "app_icon.png" ]; then
+    echo "未发现既有 AppIcon.icns，尝试从 app_icon.png 生成图标包..."
     
     ICONSET_DIR="AppIcon.iconset"
     mkdir -p "${ICONSET_DIR}"
@@ -44,15 +55,15 @@ if [ -f "app_icon.png" ]; then
     sips -s format png -z 1024 1024 app_icon.png --out "${ICONSET_DIR}/icon_512x512@2x.png" > /dev/null 2>&1
     
     echo "正在转换成 icns..."
-    iconutil -c icns "${ICONSET_DIR}" -o AppIcon.icns
-    
-    # 移动到 App 资源包下
-    mv AppIcon.icns "${RESOURCES_DIR}/AppIcon.icns"
+    if iconutil -c icns "${ICONSET_DIR}" -o AppIcon.icns; then
+        mv AppIcon.icns "${RESOURCES_DIR}/AppIcon.icns"
+        echo "AppIcon.icns 生成并打包成功！"
+    else
+        echo "警告：AppIcon.icns 生成失败，将继续构建并使用系统默认应用图标。"
+    fi
     
     # 清理临时生成的 iconset 目录
     rm -rf "${ICONSET_DIR}"
-    
-    echo "AppIcon.icns 生成并打包成功！"
 else
     echo "未检测到 app_icon.png，应用将使用 macOS 系统默认空白图标。"
 fi
@@ -61,7 +72,7 @@ fi
 echo "编译 Swift 源码 (main.swift) 中，请稍候..."
 SDK_PATH=$(xcrun --show-sdk-path --sdk macosx)
 
-swiftc -parse-as-library -O -sdk "${SDK_PATH}" Sources/*.swift -o PDFExtractor
+swiftc -parse-as-library -O -sdk "${SDK_PATH}" -module-cache-path "${MODULE_CACHE_DIR}" Sources/*.swift -o PDFExtractor
 
 echo "编译成功！生成可执行程序。"
 

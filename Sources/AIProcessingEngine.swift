@@ -5,9 +5,6 @@ import SwiftUI
 class AIProcessingEngine: ObservableObject {
     @Published var isAIProcessing = false
     @Published var aiProgressStatus: String = ""
-    @Published var aiResultText: String = ""
-    @Published var aiTxtFileURL: URL?
-    @Published var aiMdFileURL: URL?
     
     // === 物理页码对应的 AI 优化文本缓存 ===
     @Published var aiPagesText: [Int: String] = [:]
@@ -39,8 +36,6 @@ class AIProcessingEngine: ObservableObject {
         }
     }
     
-    private var pdfURL: URL?
-    
     // 会话与任务句柄
     private var currentAISession: URLSession?
     private var currentAITask: URLSessionDataTask?
@@ -48,18 +43,13 @@ class AIProcessingEngine: ObservableObject {
     // 强引用保持当前流代理，防止垃圾回收
     private var currentStreamDelegate: AIStreamDelegate?
     
-    // 分片队列缓存
-    private var pendingAIChunks: [String] = []
-    private var aiCompletedText: String = ""    // 已拼接完成的分段结果
+    // 当前页流式文本缓冲。每一页完成后写回 aiPagesText。
     private var aiLastCompletedChunkText: String = "" // 当前正在接收的分片文本缓冲
     private var systemPromptBackup: String = ""
     
     // === UI 流式回显节流 (Throttle) 属性 ===
     private var lastUIUpdateTime = Date.distantPast
     private var aiPendingOutputBuffer = ""
-    
-    // 专职后台磁盘 I/O 串行队列，绝不阻塞主线程 UI
-    private let ioQueue = DispatchQueue(label: "com.pdfextractor.ioqueue", qos: .background)
     
     // === 线程安全 Epoch 时序 Token 锁结构 ===
     private let aiTokenLock = NSLock()
@@ -134,7 +124,7 @@ class AIProcessingEngine: ObservableObject {
         checkURLSafety(urlString: aiApiBaseUrl)
         
         guard let url = URL(string: aiApiBaseUrl + "/models") else {
-            self.aiProgressStatus = "❌ 无效的 API 服务地址"
+            self.aiProgressStatus = "错误：无效的 API 服务地址。"
             return
         }
         
@@ -154,7 +144,7 @@ class AIProcessingEngine: ObservableObject {
                 let (data, _) = try await URLSession.shared.data(for: request)
                 try self.parseAndApplyModels(data: data)
             } catch {
-                self.aiProgressStatus = "❌ 连接失败: \(error.localizedDescription)"
+                self.aiProgressStatus = "错误：连接失败，\(error.localizedDescription)"
             }
             self.isAIFetchingModels = false
         }
@@ -169,7 +159,7 @@ class AIProcessingEngine: ObservableObject {
             if !modelIds.isEmpty && (self.aiSelectedModel.isEmpty || !modelIds.contains(self.aiSelectedModel)) {
                 self.aiSelectedModel = modelIds.first ?? ""
             }
-            self.aiProgressStatus = "✅ 成功拉取到 \(modelIds.count) 个本地模型"
+            self.aiProgressStatus = "已获取 \(modelIds.count) 个本地模型。"
         } catch {
             if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
                let dataArray = json["data"] as? [[String: Any]] {
@@ -178,9 +168,9 @@ class AIProcessingEngine: ObservableObject {
                 if !ids.isEmpty && (self.aiSelectedModel.isEmpty || !ids.contains(self.aiSelectedModel)) {
                     self.aiSelectedModel = ids.first ?? ""
                 }
-                self.aiProgressStatus = "✅ 成功获取 \(ids.count) 个模型"
+                self.aiProgressStatus = "已获取 \(ids.count) 个模型。"
             } else {
-                self.aiProgressStatus = "❌ 无法解析模型列表，请确认服务是否兼容 OpenAI 规范"
+                self.aiProgressStatus = "错误：无法解析模型列表，请确认服务兼容 OpenAI 接口。"
             }
         }
     }
@@ -190,18 +180,12 @@ class AIProcessingEngine: ObservableObject {
     func processTextWithAI(
         extractedPages: [Int: String],
         targetPages: [Int],
-        systemPrompt: String,
-        fileURL: URL?
+        systemPrompt: String
     ) {
-        cancelAIProcessing()
+        cancelAIProcessing(showStatus: false)
         
-        self.pdfURL = fileURL
         self.isAIProcessing = true
-        self.aiResultText = ""
-        self.aiCompletedText = ""
         self.aiLastCompletedChunkText = ""
-        self.aiTxtFileURL = nil
-        self.aiMdFileURL = nil
         self.lastUIUpdateTime = Date.distantPast
         self.aiPendingOutputBuffer = ""
         
@@ -217,7 +201,7 @@ class AIProcessingEngine: ObservableObject {
         }
         
         if chunks.isEmpty {
-            self.aiProgressStatus = "❌ 目标页面中没有需要净化的文本内容，请先提取文本。"
+            self.aiProgressStatus = "错误：目标页面没有可净化文本，请先提取文字。"
             self.isAIProcessing = false
             return
         }
@@ -239,8 +223,7 @@ class AIProcessingEngine: ObservableObject {
         guard isAIProcessing else { return }
         
         if pendingPagesToProcess.isEmpty {
-            self.aiProgressStatus = "🎉 本地 AI 净化校对完成！"
-            saveAIResultToDisk()
+            self.aiProgressStatus = "本地 AI 净化已完成。"
             self.isAIProcessing = false
             return
         }
@@ -248,7 +231,7 @@ class AIProcessingEngine: ObservableObject {
         checkURLSafety(urlString: aiApiBaseUrl)
         
         guard let url = URL(string: aiApiBaseUrl + "/chat/completions") else {
-            self.aiProgressStatus = "❌ 无效的 API 服务地址"
+            self.aiProgressStatus = "错误：无效的 API 服务地址。"
             self.isAIProcessing = false
             return
         }
@@ -286,7 +269,7 @@ class AIProcessingEngine: ObservableObject {
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
         } catch {
-            self.aiProgressStatus = "❌ 序列化请求数据失败"
+            self.aiProgressStatus = "错误：无法生成 AI 请求数据。"
             self.isAIProcessing = false
             return
         }
@@ -327,21 +310,13 @@ class AIProcessingEngine: ObservableObject {
             if error.code == NSURLErrorCancelled {
                 return
             }
-            self.aiProgressStatus = "❌ 优化生成中断: \(error.localizedDescription)"
+            self.aiProgressStatus = "错误：AI 生成中断，\(error.localizedDescription)"
             self.isAIProcessing = false
         } else {
             // 每页处理完后，我们把这页的最终结果 aiLastCompletedChunkText 写回 aiPagesText
             if let pageIdx = self.currentPageIndexProcessing {
                 self.aiPagesText[pageIdx] = self.aiLastCompletedChunkText
             }
-            
-            // 将 memory 文本拼接，方便导出
-            let pageHeader = "\n[第 \(self.currentPageIndexProcessing ?? 0) 页]\n"
-            self.aiCompletedText += pageHeader + self.aiLastCompletedChunkText + "\n"
-            
-            let chunkToSave = self.aiLastCompletedChunkText
-            let chunkIdx = self.aiCurrentChunkIndex
-            self.appendAIResultChunkToDisk(chunkContent: chunkToSave, chunkIndex: chunkIdx)
             
             self.aiCurrentChunkIndex += 1
             self.currentPageIndexProcessing = nil
@@ -350,11 +325,10 @@ class AIProcessingEngine: ObservableObject {
     }
     
     /// 中止 AI 文本润色进程 (保留已经吐出来的和已完成物理页的内容)
-    func cancelAIProcessing() {
-        // 强制递增时序 Token。所有已经在 ioQueue 线程中排队挂起的写盘任务，其持有的旧 Token 均将失效
+    func cancelAIProcessing(showStatus: Bool = true) {
+        // 强制递增时序 Token，让旧网络回调在回到主线程后失效。
         currentAITokenSafe = UUID()
         
-        self.pendingAIChunks.removeAll()
         self.pendingPagesToProcess.removeAll()
         self.currentPageIndexProcessing = nil
         self.aiPendingOutputBuffer = ""
@@ -369,17 +343,16 @@ class AIProcessingEngine: ObservableObject {
         self.currentStreamDelegate = nil
         
         self.isAIProcessing = false
-        self.aiTxtFileURL = nil
-        self.aiMdFileURL = nil
-        self.aiProgressStatus = "❌ 已主动取消 AI 优化净化流程。"
+        if showStatus {
+            self.aiProgressStatus = "已取消 AI 净化流程。"
+        }
     }
     
     /// 彻底清除所有已保存的 AI 页码缓存与导出文件路径 (当关闭 PDF 文件时调用)
     func clear() {
-        cancelAIProcessing()
+        cancelAIProcessing(showStatus: false)
         self.aiPagesText = [:]
-        self.aiResultText = ""
-        self.aiCompletedText = ""
+        self.aiProgressStatus = ""
     }
     
     /// 节流刷新：在 @MainActor 上更新数据
@@ -399,88 +372,20 @@ class AIProcessingEngine: ObservableObject {
         aiPendingOutputBuffer = ""
         
         self.aiLastCompletedChunkText += textToAppend
-        self.aiResultText = self.aiCompletedText + self.aiLastCompletedChunkText
         
-        // 同步更新当前正在处理 of 物理页的 AI 净化文本缓存
+        // 同步更新当前正在处理的物理页 AI 净化文本缓存。
         if let pageIdx = currentPageIndexProcessing {
             self.aiPagesText[pageIdx] = (self.aiPagesText[pageIdx] ?? "") + textToAppend
         }
-    }
-    
-    /// 【退避断句切分算法】：排版与分片重叠度智能预处理
-    private func splitTextIntoChunks(_ text: String, maxChars: Int = 1800) -> [String] {
-        var chunks: [String] = []
-        var remainingText = text
-        
-        while !remainingText.isEmpty {
-            if remainingText.count <= maxChars {
-                chunks.append(remainingText)
-                break
-            }
-            
-            let subrange = remainingText.prefix(maxChars)
-            let searchMinIndex = max(1000, maxChars - 400)
-            let searchArea = String(subrange.suffix(maxChars - searchMinIndex))
-            
-            var cutOffset = -1
-            
-            if let lastNewLineIndex = searchArea.lastIndex(of: "\n") {
-                cutOffset = searchMinIndex + searchArea.distance(from: searchArea.startIndex, to: lastNewLineIndex)
-            } else {
-                let punctuation: [Character] = ["。", "！", "？", "；", ".", "!", "?", ";"]
-                var latestPunctIndex: String.Index? = nil
-                for char in punctuation {
-                    if let index = searchArea.lastIndex(of: char) {
-                        if latestPunctIndex == nil || index > latestPunctIndex! {
-                            latestPunctIndex = index
-                        }
-                    }
-                }
-                
-                if let idx = latestPunctIndex {
-                    cutOffset = searchMinIndex + searchArea.distance(from: searchArea.startIndex, to: idx) + 1
-                } else {
-                    let minorPunct: [Character] = ["，", "、", ","]
-                    var latestMinorIndex: String.Index? = nil
-                    for char in minorPunct {
-                        if let index = searchArea.lastIndex(of: char) {
-                            if latestMinorIndex == nil || index > latestMinorIndex! {
-                                latestMinorIndex = index
-                            }
-                        }
-                    }
-                    if let idx = latestMinorIndex {
-                        cutOffset = searchMinIndex + searchArea.distance(from: searchArea.startIndex, to: idx) + 1
-                    }
-                }
-            }
-            
-            if cutOffset == -1 {
-                cutOffset = maxChars
-            }
-            
-            let cutIndex = remainingText.index(remainingText.startIndex, offsetBy: cutOffset)
-            let chunk = String(remainingText[..<cutIndex])
-            chunks.append(chunk)
-            
-            remainingText = String(remainingText[cutIndex...])
-        }
-        
-        return chunks
-    }
-    
-    private func saveAIResultToDisk() {
-        // 取消后台自动存盘，全部由用户在界面上点击导出按钮手动另存
-    }
-    
-    private func appendAIResultChunkToDisk(chunkContent: String, chunkIndex: Int) {
-        // 取消后台自动追加分片落盘，数据纯在内存中保存
     }
 }
 
 // MARK: - 独立的 URLSessionDataDelegate 流代理，解耦 NSObject 混合继承 (1.3 节整改要求)
 final class AIStreamDelegate: NSObject, URLSessionDataDelegate {
     private var streamBuffer = Data()
+    private var httpErrorStatusCode: Int?
+    private var httpErrorBody = Data()
+    private var hasReceivedDelta = false
     
     var onDeltaReceived: ((String) -> Void)?
     var onComplete: ((Error?) -> Void)?
@@ -491,10 +396,19 @@ final class AIStreamDelegate: NSObject, URLSessionDataDelegate {
         didReceive response: URLResponse,
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200...299).contains(httpResponse.statusCode) {
+            httpErrorStatusCode = httpResponse.statusCode
+        }
         completionHandler(.allow)
     }
     
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        if httpErrorStatusCode != nil {
+            httpErrorBody.append(data)
+            return
+        }
+        
         streamBuffer.append(data)
         
         while let lineEndIndex = streamBuffer.firstIndex(of: 10) {
@@ -515,12 +429,28 @@ final class AIStreamDelegate: NSObject, URLSessionDataDelegate {
             }
             
             if let content = parseDeltaContent(from: jsonPart) {
+                hasReceivedDelta = true
                 onDeltaReceived?(content)
             }
         }
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let statusCode = httpErrorStatusCode {
+            onComplete?(makeHTTPError(statusCode: statusCode))
+            return
+        }
+        
+        if error == nil && !hasReceivedDelta {
+            let emptyStreamError = NSError(
+                domain: "AIStreamDelegate",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "AI 服务没有返回可解析的流式文本，请确认端点兼容 OpenAI chat/completions 的 SSE 格式。"]
+            )
+            onComplete?(emptyStreamError)
+            return
+        }
+        
         onComplete?(error)
     }
     
@@ -534,5 +464,24 @@ final class AIStreamDelegate: NSObject, URLSessionDataDelegate {
             return nil
         }
         return content
+    }
+    
+    private func makeHTTPError(statusCode: Int) -> NSError {
+        let bodyText = String(data: httpErrorBody, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        let clippedBody = bodyText.map { String($0.prefix(300)) } ?? ""
+        let message: String
+        if clippedBody.isEmpty {
+            message = "AI 服务返回 HTTP \(statusCode)，没有附带错误正文。"
+        } else {
+            message = "AI 服务返回 HTTP \(statusCode)：\(clippedBody)"
+        }
+        
+        return NSError(
+            domain: "AIStreamDelegate",
+            code: statusCode,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
     }
 }
