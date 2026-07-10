@@ -62,6 +62,14 @@ struct PDFPreviewView: NSViewRepresentable {
             }
         }
     }
+
+    static func dismantleNSView(_ nsView: PDFView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(
+            coordinator,
+            name: .PDFViewPageChanged,
+            object: nsView
+        )
+    }
     
     // MARK: - Coordinator 控制器，实现防抖与双向通知中介
     class Coordinator: NSObject {
@@ -74,6 +82,7 @@ struct PDFPreviewView: NSViewRepresentable {
             self.parent = parent
         }
         
+        @MainActor
         @objc func handlePageChanged(_ notification: Notification) {
             // 如果是外部更新引起的通知，忽略它，不向外回传
             guard !isUpdatingFromParent else { return }
@@ -86,15 +95,22 @@ struct PDFPreviewView: NSViewRepresentable {
             
             // 安全回传，只在页面发生真实物理移动时回传
             if parent.currentPage != pageIndex {
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    // 确保页码在合法范围
-                    let maxPages = doc.pageCount
-                    if pageIndex >= 1 && pageIndex <= maxPages {
-                        self.parent.currentPage = pageIndex
-                    }
+                let maximumPageCount = doc.pageCount
+                // PDFView 页面通知由主线程发出，可直接同步绑定，避免额外排队导致页码闪回。
+                if pageIndex >= 1 && pageIndex <= maximumPageCount {
+                    parent.currentPage = pageIndex
                 }
             }
         }
     }
 }
+
+#if canImport(PreviewsMacros)
+#Preview {
+    PDFPreviewView(
+        pdfDocument: nil,
+        currentPage: .constant(1)
+    )
+    .frame(width: 700, height: 560)
+}
+#endif

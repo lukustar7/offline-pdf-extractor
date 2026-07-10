@@ -48,7 +48,7 @@ struct ResultInspectorView: View {
             HStack(spacing: Theme.Spacing.sm) {
                 Image(systemName: selectedPane == .raw ? "text.page" : "sparkles")
                     .font(.system(.headline).weight(.semibold))
-                    .foregroundStyle(selectedPane == .raw ? Color.accentColor : .purple)
+                    .foregroundStyle(Color.accentColor)
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("结果")
@@ -80,7 +80,19 @@ struct ResultInspectorView: View {
         ZStack {
             if engine.isProcessing && engine.extractedPagesText.isEmpty {
                 VStack(spacing: Theme.Spacing.lg) {
-                    ProgressShimmerRing(progress: engine.progress, etaText: engine.etaString)
+                    ProgressView(value: engine.progress) {
+                        Text("提取进度")
+                    } currentValueLabel: {
+                        Text("\(Int(engine.progress * 100))%")
+                    }
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 220)
+
+                    if !engine.etaString.isEmpty {
+                        Text(engine.etaString)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text(engine.currentStatus)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -115,6 +127,14 @@ struct ResultInspectorView: View {
                         .padding(.horizontal, Theme.Spacing.lg)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if aiEngine.aiPagesText.isEmpty,
+                      aiEngine.aiProgressStatus.hasPrefix("错误") {
+                EmptyResultState(
+                    systemImage: "exclamationmark.triangle.fill",
+                    title: "AI 处理未开始",
+                    subtitle: aiEngine.aiProgressStatus,
+                    tint: .red
+                )
             } else if aiEngine.aiPagesText.isEmpty {
                 EmptyResultState(
                     systemImage: "sparkles",
@@ -162,7 +182,11 @@ struct ResultInspectorView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(engine.pdfFileName.isEmpty)
+                    .disabled(
+                        engine.pdfFileName.isEmpty
+                            || engine.isAnalyzingWatermarks
+                            || aiEngine.isAIProcessing
+                    )
                     
                     Button(action: exportRawText) {
                         Label("导出", systemImage: "square.and.arrow.down")
@@ -196,15 +220,14 @@ struct ResultInspectorView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.purple)
-                    .disabled(engine.extractedPagesText.isEmpty)
+                    .disabled(engine.extractedPagesText.isEmpty || engine.isProcessing)
                     
                     Button(action: { startAIPurification(allPages: false) }) {
                         Label("当前页", systemImage: "sparkles.rectangle.stack")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(engine.extractedPagesText.isEmpty)
+                    .disabled(engine.extractedPagesText.isEmpty || engine.isProcessing)
                 }
                 
                 HStack(spacing: Theme.Spacing.sm) {
@@ -227,7 +250,7 @@ struct ResultInspectorView: View {
     }
     
     private func startAIPurification(allPages: Bool) {
-        let targetPages = allPages ? Array(1...engine.pdfTotalPages) : [currentPage]
+        let targetPages = allPages ? engine.extractedPagesText.keys.sorted() : [currentPage]
         let showChanges = UserDefaults.standard.bool(forKey: "aiShowChanges")
         let passWatermarks = UserDefaults.standard.bool(forKey: "aiPassWatermarks")
         let activeWatermarks = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
@@ -282,21 +305,18 @@ struct ResultInspectorView: View {
     }
     
     private func joinedPages(_ pages: [Int: String]) -> String {
-        pages.keys.sorted().reduce(into: "") { result, page in
-            if let text = pages[page] {
-                result += "[第 \(page) 页]\n\(text)\n\n"
-            }
+        pages.keys.sorted().compactMap { page in
+            pages[page].map { "[第 \(page) 页]\n\($0)" }
         }
+        .joined(separator: "\n\n")
     }
     
     private func markdownPages(_ pages: [Int: String]) -> String {
-        var content = "# \(engine.pdfFileName) AI 净化校对正文\n\n"
-        for page in pages.keys.sorted() {
-            if let text = pages[page] {
-                content += "## 第 \(page) 页\n\n\(text)\n\n"
-            }
+        let sections = pages.keys.sorted().compactMap { page in
+            pages[page].map { "## 第 \(page) 页\n\n\($0)" }
         }
-        return content
+        return (["# \(engine.pdfFileName) AI 净化校对正文"] + sections)
+            .joined(separator: "\n\n")
     }
 }
 
@@ -304,12 +324,13 @@ private struct EmptyResultState: View {
     let systemImage: String
     let title: String
     let subtitle: String
+    var tint: Color = .secondary
     
     var body: some View {
         VStack(spacing: Theme.Spacing.md) {
             Image(systemName: systemImage)
                 .font(.system(size: 34, weight: .regular))
-                .foregroundStyle(.secondary.opacity(0.48))
+                .foregroundStyle(tint.opacity(0.7))
             
             VStack(spacing: Theme.Spacing.xs) {
                 Text(title)
@@ -326,3 +347,15 @@ private struct EmptyResultState: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
+
+#if canImport(PreviewsMacros)
+#Preview {
+    ResultInspectorView(
+        engine: PDFExtractorEngine(),
+        aiEngine: AIProcessingEngine(),
+        currentPage: .constant(1),
+        onStartExtraction: {}
+    )
+    .frame(width: 380, height: 720)
+}
+#endif

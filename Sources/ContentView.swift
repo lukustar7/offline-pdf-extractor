@@ -14,10 +14,9 @@ struct ContentView: View {
             if engine.pdfDocument == nil {
                 // 1. 文件尚未加载时，全屏展示极简拖拽/导入页
                 LaunchView(
+                    errorMessage: engine.errorMessage,
                     onFileSelected: { url in
-                        currentPage = 1
-                        pageInput = "1"
-                        engine.loadPDF(url: url)
+                        loadPDF(url)
                     },
                     onInvalidFile: { errorMsg in
                         engine.errorMessage = errorMsg
@@ -31,14 +30,14 @@ struct ContentView: View {
                         engine: engine,
                         aiEngine: aiEngine
                     )
-                    .frame(minWidth: 300, idealWidth: 330, maxWidth: 380)
+                    .frame(minWidth: 270, idealWidth: 310, maxWidth: 360)
                     
                     HSplitView {
                         PDFCanvasView(
                             engine: engine,
                             currentPage: $currentPage
                         )
-                        .frame(minWidth: 480, idealWidth: 720, maxWidth: .infinity)
+                        .frame(minWidth: 420, idealWidth: 700, maxWidth: .infinity)
                         
                         ResultInspectorView(
                             engine: engine,
@@ -46,9 +45,9 @@ struct ContentView: View {
                             currentPage: $currentPage,
                             onStartExtraction: startExtractionAction
                         )
-                        .frame(minWidth: 320, idealWidth: 380, maxWidth: 440)
+                        .frame(minWidth: 300, idealWidth: 360, maxWidth: 440)
                     }
-                    .frame(minWidth: 840, maxWidth: .infinity)
+                    .frame(minWidth: 730, maxWidth: .infinity)
                 }
                 .transition(.opacity)
             }
@@ -144,9 +143,16 @@ struct ContentView: View {
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.pdf]
         if panel.runModal() == .OK, let url = panel.url {
-            currentPage = 1
-            engine.loadPDF(url: url)
+            loadPDF(url)
         }
+    }
+
+    /// 所有导入入口统一经过这里，确保新文件不会继承上一份 PDF 的 AI 结果。
+    private func loadPDF(_ url: URL) {
+        aiEngine.clear()
+        currentPage = 1
+        pageInput = "1"
+        engine.loadPDF(url: url)
     }
     
     /// 关闭当前 PDF 并且清空引擎的所有物理缓存
@@ -166,22 +172,22 @@ struct ContentView: View {
         
         let scenarioRaw = UserDefaults.standard.string(forKey: "processingScenario") ?? PDFProcessingScenario.electronicTextWithTextWatermark.rawValue
         let scenario = PDFProcessingScenario(rawValue: scenarioRaw) ?? .electronicTextWithTextWatermark
-        let eraseImageWatermark = UserDefaults.standard.object(forKey: "eraseImageWatermark") as? Bool ?? scenario.maskTextWatermarkBeforeOCR
-        
-        currentPage = 1
-        
-        engine.extractText(
-            scenario: scenario,
-            activeWatermarks: active,
-            customWatermarks: customWatermarks,
-            ignoreCase: ignoreCase,
-            mode: scenario.extractionMode,
-            watermarkRemovalMode: scenario.watermarkRemovalMode,
-            enableWatermarkFilter: scenario.enableWatermarkFilter,
-            eraseImageWatermark: eraseImageWatermark,
-            pageRangeString: pageRangeString
-        ) { _, _, _, _ in
-            // 结果按页保存在 engine.extractedPagesText 中，右侧检查器直接读取该缓存。
+        let eraseImageWatermark = UserDefaults.standard.object(forKey: "eraseImageWatermark") as? Bool ?? false
+
+        do {
+            let request = try PDFExtractionRequest(
+                scenario: scenario,
+                activeWatermarks: active,
+                customWatermarks: customWatermarks,
+                ignoreCase: ignoreCase,
+                eraseImageWatermark: eraseImageWatermark,
+                pageRangeString: pageRangeString,
+                maximumPageCount: engine.pdfTotalPages
+            )
+            currentPage = request.targetPages.first ?? 1
+            engine.extractText(request: request)
+        } catch {
+            engine.errorMessage = error.localizedDescription
         }
     }
     
@@ -201,8 +207,15 @@ struct ContentView: View {
         
         aiEngine.processTextWithAI(
             extractedPages: engine.extractedPagesText,
-            targetPages: Array(1...engine.pdfTotalPages),
+            targetPages: engine.extractedPagesText.keys.sorted(),
             systemPrompt: finalPrompt
         )
     }
 }
+
+#if canImport(PreviewsMacros)
+#Preview {
+    ContentView()
+        .frame(minWidth: 1_000, minHeight: 700)
+}
+#endif

@@ -11,11 +11,11 @@ struct FileInfoView: View {
     @State private var showConfirm = false
     
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        GroupBox {
             HStack {
                 Image(systemName: "doc.fill")
                     .font(.system(size: 24))
-                    .foregroundColor(.accentColor)
+                    .foregroundStyle(.tint)
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
@@ -24,7 +24,7 @@ struct FileInfoView: View {
                     
                     Text("\(size)  •  共 \(pages) 页")
                         .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                 }
                 
                 Spacer()
@@ -34,7 +34,7 @@ struct FileInfoView: View {
                 }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 16))
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 // 绑定无障碍描述
@@ -51,16 +51,22 @@ struct FileInfoView: View {
                 }
             }
         }
-        .padding(Theme.Spacing.md)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.accentColor.opacity(0.2), lineWidth: 1)
-        )
         // 卡片整体无障碍适配。
         .accessibilityElement(children: .combine)
         .accessibilityLabel("已加载的 PDF 文件：\(name)")
         .accessibilityValue("文件大小 \(size)，总计 \(pages) 页")
     }
 }
+
+#if canImport(PreviewsMacros)
+#Preview {
+    FileInfoView(
+        name: "研究报告.pdf",
+        size: "3.2 MB",
+        pages: 24,
+        onClear: {}
+    )
+    .frame(width: 320)
+    .padding()
+}
+#endif

@@ -61,10 +61,6 @@ enum AIPromptBuilder {
     
     /// 将逗号、中文逗号或换行分隔的自定义水印词整理成去重集合。
     static func parsedWatermarks(from rawText: String) -> Set<String> {
-        let items = rawText
-            .components(separatedBy: CharacterSet(charactersIn: ",，\n"))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        return Set(items)
+        WatermarkTermParser.parse(rawText)
     }
 }

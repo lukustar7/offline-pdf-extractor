@@ -1,89 +1,86 @@
 #!/bin/bash
 
-# 确保脚本发生任何错误时直接退出
-set -e
+# 构建脚本在替换现有 App 前完成测试、编译、打包和签名，任何一步失败都会保留旧产物。
+set -euo pipefail
 
-echo "=== 开始编译并打包 macOS PDF去水印文字提取工具 (v0.3.0) ==="
+ROOT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "${ROOT_DIR}"
 
-# 1. 定义应用名称和目录结构
 APP_NAME="PDF文字提取"
+EXECUTABLE_NAME="PDFExtractor"
 APP_DIR="${APP_NAME}.app"
-CONTENTS_DIR="${APP_DIR}/Contents"
-MACOS_DIR="${CONTENTS_DIR}/MacOS"
-RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-MODULE_CACHE_DIR="${TMPDIR:-/tmp}/pdfextractor-module-cache"
-ICON_BACKUP_PATH=""
+DEPLOYMENT_TARGET="14.0"
 
-if [ -f "${RESOURCES_DIR}/AppIcon.icns" ]; then
-    ICON_BACKUP_PATH="${TMPDIR:-/tmp}/pdfextractor-AppIcon.icns"
-    cp "${RESOURCES_DIR}/AppIcon.icns" "${ICON_BACKUP_PATH}"
-fi
+SCRATCH_DIR=".build/swiftpm"
+CACHE_DIR=".build/swiftpm-cache"
+CONFIG_DIR=".build/swiftpm-config"
+SECURITY_DIR=".build/swiftpm-security"
+STAGING_ROOT=".build/app-staging"
+STAGING_APP="${STAGING_ROOT}/${APP_NAME}.app"
+STAGING_CONTENTS="${STAGING_APP}/Contents"
+STAGING_MACOS="${STAGING_CONTENTS}/MacOS"
+STAGING_RESOURCES="${STAGING_CONTENTS}/Resources"
+PREVIOUS_APP=".build/previous-${APP_NAME}.app"
 
-# 2. 清理历史构建产物
-echo "清理历史构建..."
-rm -rf "${APP_DIR}"
-rm -f PDFExtractor
-rm -rf AppIcon.iconset
-rm -f AppIcon.icns
+echo "=== 构建 macOS PDF 文字提取工具 v0.3.0 ==="
 
-# 3. 创建 macOS App 包的目录结构
-echo "创建 App 目录结构..."
-mkdir -p "${MACOS_DIR}"
-mkdir -p "${RESOURCES_DIR}"
-mkdir -p "${MODULE_CACHE_DIR}"
+echo "1/6 校验配置并运行核心测试..."
+plutil -lint Info.plist >/dev/null
+./test.sh
 
-# 4. 图标打包逻辑
-if [ -n "${ICON_BACKUP_PATH}" ] && [ -f "${ICON_BACKUP_PATH}" ]; then
-    cp "${ICON_BACKUP_PATH}" "${RESOURCES_DIR}/AppIcon.icns"
-    echo "已复用现有 AppIcon.icns。"
-elif [ -f "app_icon.png" ]; then
-    echo "未发现既有 AppIcon.icns，尝试从 app_icon.png 生成图标包..."
-    
-    ICONSET_DIR="AppIcon.iconset"
-    mkdir -p "${ICONSET_DIR}"
-    
-    # 显式指定 -s format png，将输入的 JPEG 强制转码为合法的 PNG
-    sips -s format png -z 16 16     app_icon.png --out "${ICONSET_DIR}/icon_16x16.png" > /dev/null 2>&1
-    sips -s format png -z 32 32     app_icon.png --out "${ICONSET_DIR}/icon_16x16@2x.png" > /dev/null 2>&1
-    sips -s format png -z 32 32     app_icon.png --out "${ICONSET_DIR}/icon_32x32.png" > /dev/null 2>&1
-    sips -s format png -z 64 64     app_icon.png --out "${ICONSET_DIR}/icon_32x32@2x.png" > /dev/null 2>&1
-    sips -s format png -z 128 128   app_icon.png --out "${ICONSET_DIR}/icon_128x128.png" > /dev/null 2>&1
-    sips -s format png -z 256 256   app_icon.png --out "${ICONSET_DIR}/icon_128x128@2x.png" > /dev/null 2>&1
-    sips -s format png -z 256 256   app_icon.png --out "${ICONSET_DIR}/icon_256x256.png" > /dev/null 2>&1
-    sips -s format png -z 512 512   app_icon.png --out "${ICONSET_DIR}/icon_256x256@2x.png" > /dev/null 2>&1
-    sips -s format png -z 512 512   app_icon.png --out "${ICONSET_DIR}/icon_512x512.png" > /dev/null 2>&1
-    sips -s format png -z 1024 1024 app_icon.png --out "${ICONSET_DIR}/icon_512x512@2x.png" > /dev/null 2>&1
-    
-    echo "正在转换成 icns..."
-    if iconutil -c icns "${ICONSET_DIR}" -o AppIcon.icns; then
-        mv AppIcon.icns "${RESOURCES_DIR}/AppIcon.icns"
-        echo "AppIcon.icns 生成并打包成功！"
-    else
-        echo "警告：AppIcon.icns 生成失败，将继续构建并使用系统默认应用图标。"
-    fi
-    
-    # 清理临时生成的 iconset 目录
-    rm -rf "${ICONSET_DIR}"
+echo "2/6 使用 Swift 6 发布配置编译..."
+mkdir -p "${CACHE_DIR}" "${CONFIG_DIR}" "${SECURITY_DIR}"
+SWIFT_BUILD_OPTIONS=(
+    --cache-path "${CACHE_DIR}"
+    --config-path "${CONFIG_DIR}"
+    --security-path "${SECURITY_DIR}"
+    --scratch-path "${SCRATCH_DIR}"
+    --configuration release
+)
+
+BIN_DIR=$(swift build "${SWIFT_BUILD_OPTIONS[@]}" --show-bin-path)
+swift build "${SWIFT_BUILD_OPTIONS[@]}" --product "${EXECUTABLE_NAME}"
+
+echo "3/6 创建临时 App 包..."
+rm -rf "${STAGING_ROOT}"
+mkdir -p "${STAGING_MACOS}" "${STAGING_RESOURCES}"
+cp "${BIN_DIR}/${EXECUTABLE_NAME}" "${STAGING_MACOS}/${EXECUTABLE_NAME}"
+cp Info.plist "${STAGING_CONTENTS}/Info.plist"
+chmod +x "${STAGING_MACOS}/${EXECUTABLE_NAME}"
+
+echo "4/6 准备应用图标..."
+if [ -f "AppIcon.icns" ]; then
+    cp AppIcon.icns "${STAGING_RESOURCES}/AppIcon.icns"
 else
-    echo "未检测到 app_icon.png，应用将使用 macOS 系统默认空白图标。"
+    echo "错误：缺少 AppIcon.icns，无法完成应用打包。" >&2
+    exit 1
 fi
 
-# 5. 编译 Swift 代码
-echo "编译 Swift 源码 (main.swift) 中，请稍候..."
-SDK_PATH=$(xcrun --show-sdk-path --sdk macosx)
+echo "5/6 执行本地签名与包完整性校验..."
+codesign --force --deep --sign - "${STAGING_APP}"
+codesign --verify --deep --strict "${STAGING_APP}"
 
-swiftc -parse-as-library -O -sdk "${SDK_PATH}" -module-cache-path "${MODULE_CACHE_DIR}" Sources/*.swift -o PDFExtractor
+ACTUAL_MINIMUM_OS=$(otool -l "${STAGING_MACOS}/${EXECUTABLE_NAME}" \
+    | awk '/minos/{print $2; exit}')
+if [ "${ACTUAL_MINIMUM_OS}" != "${DEPLOYMENT_TARGET}" ]; then
+    echo "错误：二进制最低系统版本为 ${ACTUAL_MINIMUM_OS}，预期为 ${DEPLOYMENT_TARGET}。" >&2
+    exit 1
+fi
 
-echo "编译成功！生成可执行程序。"
+echo "6/6 原子替换本地 App..."
+rm -rf "${PREVIOUS_APP}"
+if [ -d "${APP_DIR}" ]; then
+    mv "${APP_DIR}" "${PREVIOUS_APP}"
+fi
 
-# 6. 打包应用
-echo "正在打包成 macOS App..."
-mv PDFExtractor "${MACOS_DIR}/PDFExtractor"
-cp Info.plist "${CONTENTS_DIR}/Info.plist"
+if mv "${STAGING_APP}" "${APP_DIR}"; then
+    rm -rf "${PREVIOUS_APP}" "${STAGING_ROOT}"
+else
+    if [ -d "${PREVIOUS_APP}" ]; then
+        mv "${PREVIOUS_APP}" "${APP_DIR}"
+    fi
+    echo "错误：无法替换 App，已恢复旧产物。" >&2
+    exit 1
+fi
 
-# 7. 设置执行权限
-chmod +x "${MACOS_DIR}/PDFExtractor"
-
-echo "=== 构建成功！ ==="
-echo "应用已打包在当前目录下：'${APP_DIR}'"
-echo "您可以直接双击 '${APP_DIR}' 启动运行，或者在终端中运行 'open ${APP_DIR}'。"
+echo "=== 构建完成：${APP_DIR}（最低 macOS ${DEPLOYMENT_TARGET}） ==="

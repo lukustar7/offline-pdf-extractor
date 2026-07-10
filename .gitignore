@@ -1,4 +1,5 @@
 .DS_Store
 .claude/
+.build/
 PDF文字提取.app/
 *.zip

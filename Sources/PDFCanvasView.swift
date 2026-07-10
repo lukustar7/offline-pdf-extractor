@@ -33,7 +33,7 @@ struct PDFCanvasView: View {
     
     private var canvasHeader: some View {
         HStack(spacing: Theme.Spacing.md) {
-            Image(systemName: scenarioSymbolName)
+            Image(systemName: processingScenario.systemImage)
                 .font(.system(.title3).weight(.semibold))
                 .foregroundStyle(scenarioTintColor)
                 .frame(width: 24)
@@ -58,19 +58,10 @@ struct PDFCanvasView: View {
     }
     
     private var statusPill: some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 7, height: 7)
-            Text(statusText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, Theme.Spacing.sm)
-        .padding(.vertical, 5)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
-        .cornerRadius(8)
+        Label(statusText, systemImage: statusSymbolName)
+            .font(.caption)
+            .foregroundStyle(statusColor)
+            .lineLimit(1)
     }
     
     private var processingRail: some View {
@@ -108,6 +99,12 @@ struct PDFCanvasView: View {
         if engine.extractedPagesText.isEmpty { return .secondary }
         return .green
     }
+
+    private var statusSymbolName: String {
+        if engine.isProcessing || engine.isAnalyzingWatermarks { return "clock" }
+        if engine.extractedPagesText.isEmpty { return "circle" }
+        return "checkmark.circle.fill"
+    }
     
     private var scenarioTintColor: Color {
         switch processingScenario {
@@ -120,14 +117,14 @@ struct PDFCanvasView: View {
         }
     }
     
-    private var scenarioSymbolName: String {
-        switch processingScenario {
-        case .electronicTextWithTextWatermark:
-            return "doc.text"
-        case .scannedTextWithTextWatermark:
-            return "doc.viewfinder"
-        case .fullyScanned:
-            return "scanner"
-        }
-    }
 }
+
+#if canImport(PreviewsMacros)
+#Preview {
+    PDFCanvasView(
+        engine: PDFExtractorEngine(),
+        currentPage: .constant(1)
+    )
+    .frame(width: 720, height: 680)
+}
+#endif

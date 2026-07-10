@@ -17,7 +17,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
+    <string>14.0</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>用于连接用户指定的本地 AI 模型服务。</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSHighResolutionCapable</key>

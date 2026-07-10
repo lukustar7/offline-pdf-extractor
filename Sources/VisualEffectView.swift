@@ -18,3 +18,10 @@ struct VisualEffectView: NSViewRepresentable {
         nsView.blendingMode = blendingMode
     }
 }
+
+#if canImport(PreviewsMacros)
+#Preview {
+    VisualEffectView(material: .sidebar, blendingMode: .withinWindow)
+        .frame(width: 360, height: 240)
+}
+#endif

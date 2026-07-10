@@ -57,3 +57,12 @@ struct ReadOnlyTextView: NSViewRepresentable {
         }
     }
 }
+
+#if canImport(PreviewsMacros)
+#Preview {
+    ReadOnlyTextView(
+        text: "第 1 页\n\n这里显示提取后的只读文本，可选择并复制。"
+    )
+    .frame(width: 420, height: 320)
+}
+#endif

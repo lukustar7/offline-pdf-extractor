@@ -6,9 +6,6 @@ struct SidebarView: View {
     @ObservedObject var aiEngine: AIProcessingEngine
     
     // 使用 @AppStorage 对用户偏好进行持久化保存，防止重启丢失配置
-    @AppStorage("extractionMode") private var extractionMode: ExtractionMode = .smart
-    @AppStorage("watermarkRemovalMode") private var watermarkRemovalMode: WatermarkRemovalMode = .auto
-    @AppStorage("enableWatermarkFilter") private var enableWatermarkFilter = true
     @AppStorage("ignoreCase") private var ignoreCase = true
     @AppStorage("eraseImageWatermark") private var eraseImageWatermark = false
     @AppStorage("pageRangeString") private var pageRangeString = ""
@@ -118,60 +115,25 @@ struct SidebarView: View {
                                 DisclosureGroup(isExpanded: $isSettingsExpanded) {
                                     VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                                         
-                                        // 1. 三类真实 PDF 场景选择器
+                                        // 1. 使用 macOS 原生单选组选择三类 PDF 场景。
                                         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                                            Text("PDF 场景")
-                                                .font(.system(.caption, design: .default).weight(.semibold))
-                                                .foregroundColor(.secondary)
-                                            
-                                            VStack(spacing: Theme.Spacing.sm) {
-                                                SettingSelectorCard(
-                                                    title: PDFProcessingScenario.electronicTextWithTextWatermark.title,
-                                                    subTitle: PDFProcessingScenario.electronicTextWithTextWatermark.subtitle,
-                                                    isSelected: processingScenario == .electronicTextWithTextWatermark,
-                                                    systemImage: "doc.text",
-                                                    themeColor: .blue,
-                                                    action: { processingScenario = .electronicTextWithTextWatermark }
-                                                )
-                                                
-                                                SettingSelectorCard(
-                                                    title: PDFProcessingScenario.scannedTextWithTextWatermark.title,
-                                                    subTitle: PDFProcessingScenario.scannedTextWithTextWatermark.subtitle,
-                                                    isSelected: processingScenario == .scannedTextWithTextWatermark,
-                                                    systemImage: "doc.viewfinder",
-                                                    themeColor: .indigo,
-                                                    action: { processingScenario = .scannedTextWithTextWatermark }
-                                                )
-                                                
-                                                SettingSelectorCard(
-                                                    title: PDFProcessingScenario.fullyScanned.title,
-                                                    subTitle: PDFProcessingScenario.fullyScanned.subtitle,
-                                                    isSelected: processingScenario == .fullyScanned,
-                                                    systemImage: "scanner",
-                                                    themeColor: .orange,
-                                                    action: { processingScenario = .fullyScanned }
-                                                )
+                                            Picker("PDF 场景", selection: $processingScenario) {
+                                                ForEach(PDFProcessingScenario.allCases) { scenario in
+                                                    Label(scenario.title, systemImage: scenario.systemImage)
+                                                        .tag(scenario)
+                                                }
                                             }
-                                            
-                                            HStack(alignment: .top, spacing: Theme.Spacing.sm) {
-                                                Image(systemName: scenarioSymbolName)
-                                                    .font(.system(.callout).weight(.semibold))
-                                                    .foregroundColor(scenarioTintColor)
-                                                    .frame(width: 18)
-                                                Text(processingScenario.statusDescription)
-                                                    .font(.system(.caption2))
-                                                    .foregroundColor(.secondary)
-                                                    .lineSpacing(2)
-                                            }
-                                            .padding(Theme.Spacing.sm)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(scenarioTintColor.opacity(0.08))
-                                            .cornerRadius(8)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .stroke(scenarioTintColor.opacity(0.16), lineWidth: 1)
-                                            )
-                                            .padding(.top, Theme.Spacing.xs)
+                                            .pickerStyle(.radioGroup)
+                                            .disabled(engine.isProcessing)
+
+                                            Text(processingScenario.subtitle)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+
+                                            Text(processingScenario.statusDescription)
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .lineSpacing(2)
                                         }
                                         .padding(.vertical, Theme.Spacing.xs)
                                         
@@ -296,16 +258,29 @@ struct SidebarView: View {
                                         }
                                         .accessibilityLabel("AI 服务端点 URL 输入框")
                                     
-                                    if aiEngine.isExternalURLWarning {
-                                        HStack(alignment: .top, spacing: Theme.Spacing.xs) {
-                                            Image(systemName: "exclamationmark.triangle.fill")
-                                                .foregroundColor(.red)
-                                                .font(.system(.caption2))
-                                            Text("警示：配置了外部公网 API 地址，您的数据存在泄露风险。")
-                                                .font(.system(.caption2))
-                                                .foregroundColor(.red)
-                                                .lineLimit(2)
-                                                .lineSpacing(2)
+                                    if let validationError = aiEngine.endpointValidationError {
+                                        Label(validationError, systemImage: "xmark.octagon.fill")
+                                            .font(.caption2)
+                                            .foregroundStyle(.red)
+                                    } else if aiEngine.isExternalURLWarning {
+                                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                            Label(
+                                                "外部地址可能把模型请求、密钥和 PDF 文本发送到本机之外。",
+                                                systemImage: "exclamationmark.triangle.fill"
+                                            )
+                                            .font(.caption2)
+                                            .foregroundStyle(.red)
+
+                                            Toggle(
+                                                "允许连接当前外部地址",
+                                                isOn: Binding(
+                                                    get: { aiEngine.allowsExternalEndpoint },
+                                                    set: { aiEngine.setExternalEndpointPermission($0) }
+                                                )
+                                            )
+                                            .toggleStyle(.checkbox)
+                                            .font(.caption)
+                                            .disabled(aiEngine.isAIProcessing)
                                         }
                                         .padding(.top, 2)
                                         .transition(.opacity)
@@ -327,6 +302,38 @@ struct SidebarView: View {
                                         .buttonStyle(.bordered)
                                         .controlSize(.small)
                                         .disabled(aiEngine.isAIProcessing)
+                                    }
+                                }
+
+                                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                    Text("API 密钥（可选）")
+                                        .font(.system(.caption2, design: .default).weight(.medium))
+                                        .foregroundStyle(.secondary)
+
+                                    SecureField("本地服务通常无需填写", text: $aiEngine.aiApiKey)
+                                        .textFieldStyle(.roundedBorder)
+                                        .disabled(aiEngine.isAIProcessing)
+                                        .accessibilityLabel("AI 服务 API 密钥")
+
+                                    HStack(spacing: Theme.Spacing.sm) {
+                                        Button {
+                                            aiEngine.saveAPIKey()
+                                        } label: {
+                                            Label("保存密钥", systemImage: "key.fill")
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .disabled(aiEngine.isAIProcessing)
+
+                                        Button {
+                                            aiEngine.clearAPIKey()
+                                        } label: {
+                                            Image(systemName: "trash")
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .disabled(aiEngine.isAIProcessing || aiEngine.aiApiKey.isEmpty)
+                                        .help("清除钥匙串中的 API 密钥")
                                     }
                                 }
                                 
@@ -364,11 +371,8 @@ struct SidebarView: View {
                                     Button(action: {
                                         aiEngine.fetchAIModels()
                                     }) {
-                                        HStack(spacing: Theme.Spacing.xs) {
-                                            Image(systemName: "arrow.triangle.2.circlepath")
-                                            Text("获取本地可用模型")
-                                        }
-                                        .frame(maxWidth: .infinity)
+                                        Label("获取可用模型", systemImage: "arrow.triangle.2.circlepath")
+                                            .frame(maxWidth: .infinity)
                                     }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
@@ -432,8 +436,8 @@ struct SidebarView: View {
                                 if !aiEngine.aiProgressStatus.isEmpty {
                                     Text(aiEngine.aiProgressStatus)
                                         .font(.system(.caption2, design: .default).weight(.medium))
-                                        .foregroundColor(.purple)
-                                        .lineLimit(2)
+                                        .foregroundStyle(aiEngine.aiProgressStatus.hasPrefix("错误") ? Color.red : Color.secondary)
+                                        .lineLimit(3)
                                         .padding(.top, 2)
                                 }
                             }
@@ -451,41 +455,15 @@ struct SidebarView: View {
             }
         }
         .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
-        // 绑定 onChange，让场景卡直接驱动底层提取通道。
-        .onChange(of: processingScenario) { oldValue, newValue in
-            updateEngineSettings()
-        }
-        .onAppear {
-            updateEngineSettings()
-        }
-    }
-    
-    private var scenarioTintColor: Color {
-        switch processingScenario {
-        case .electronicTextWithTextWatermark:
-            return .blue
-        case .scannedTextWithTextWatermark:
-            return .indigo
-        case .fullyScanned:
-            return .orange
-        }
-    }
-    
-    private var scenarioSymbolName: String {
-        switch processingScenario {
-        case .electronicTextWithTextWatermark:
-            return "doc.text"
-        case .scannedTextWithTextWatermark:
-            return "doc.viewfinder"
-        case .fullyScanned:
-            return "scanner"
-        }
-    }
-    
-    /// 场景映射逻辑：用户选择真实 PDF 类型后，自动写入底层提取管线。
-    private func updateEngineSettings() {
-        extractionMode = processingScenario.extractionMode
-        watermarkRemovalMode = processingScenario.watermarkRemovalMode
-        enableWatermarkFilter = processingScenario.enableWatermarkFilter
     }
 }
+
+#if canImport(PreviewsMacros)
+#Preview {
+    SidebarView(
+        engine: PDFExtractorEngine(),
+        aiEngine: AIProcessingEngine()
+    )
+    .frame(width: 320, height: 760)
+}
+#endif
