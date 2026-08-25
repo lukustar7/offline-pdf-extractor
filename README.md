@@ -1,20 +1,21 @@
 # PDF 本地文字提取工具
 
-macOS 原生 PDF 文字提取与去水印工具。PDF 解析、Vision OCR 和文本导出均在本机完成；AI 净化默认连接本地 OpenAI 兼容端点。
+macOS 原生 PDF 文字提取与去水印工具。PDF 解析、Core Image 图像预处理、Vision OCR 和文本导出均在本机完成；AI 净化默认连接本地 OpenAI 兼容端点。
 
 ## 功能
 
 - 电子文本 PDF：读取文本层，仅删除用户确认的整行水印词。
-- 扫描 PDF：使用 macOS Vision OCR，单页图像缓冲上限约 64 MiB。
-- 水印处理：检测前 30 页高频文本，候选词默认不勾选；支持手动过滤词和可选 OCR 前遮罩。
-- AI 净化：支持 Ollama、LM Studio 与其他 OpenAI 兼容端点，按物理页串行处理。
-- 结果检查：PDF、原文与 AI 结果共用页码，支持 TXT 和 Markdown 导出。
+- 扫描 PDF：支持 Core Image 图像色阶拉伸消除浅灰/半透明背景水印与彩色印章，并使用 macOS Vision OCR 进行文字识别。
+- 水印处理：检测前 30 页高频文本，候选词默认不勾选；支持手动过滤词、可选 OCR 前遮罩与图像色阶去水印。
+- AI 净化：支持 Ollama、LM Studio 与其他 OpenAI 兼容端点，按物理页串行处理并提供单页失败容错。
+- 结果检查：PDF、原文与 AI 结果共用页码，支持一键复制当前页、TXT 和 Markdown 导出。
+- 界面架构：遵循 Apple HIG 原生规范，包含首次启动欢迎页、待机导入页与支持左右侧栏折叠的工作台。
 
 ## PDF 场景
 
 1. 电子文本 + 电子水印：读取文本层，不执行 OCR。
 2. 扫描正文 + 电子水印：保留扫描图像执行 OCR，遮罩仅作为手动选项。
-3. 全扫描件：整页 OCR 后过滤水印残留，重叠内容可继续使用 AI 净化。
+3. 全扫描件：整页经 Core Image 图像去水印预处理后执行 OCR，重叠内容可继续使用 AI 净化。
 
 ## 安全边界
 
@@ -45,6 +46,7 @@ macOS 原生 PDF 文字提取与去水印工具。PDF 解析、Vision OCR 和文
 ## 结构
 
 - `PDFExtractorEngine`：文件、任务和界面状态。
-- `PDFExtractionWorker`：后台 PDFKit 渲染、过滤与 Vision OCR。
-- `AIProcessingEngine`：端点、模型、凭证和流式任务生命周期。
+- `PDFExtractionWorker`：后台 PDFKit 渲染、Core Image 去水印滤镜与 Vision OCR。
+- `AIProcessingEngine`：端点、模型、凭证、流式任务生命周期与单页容错调度。
 - `PageRangeParser`、`AIEndpoint`、`OpenAIStreamParser`：可独立测试的纯逻辑模块。
+- `WelcomeView`、`LaunchView`、`SidebarView`、`PDFCanvasView`、`ResultInspectorView`：原生用户界面组件。

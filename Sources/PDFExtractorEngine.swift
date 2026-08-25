@@ -20,6 +20,12 @@ final class PDFExtractorEngine: ObservableObject {
     @Published var etaString = ""
     @Published var pdfDocument: PDFDocument?
     @Published var errorMessage: String?
+    @Published var currentPage = 1
+    @Published var pageInput = "1"
+    @Published var showWelcomeSheet = false
+    @Published var showCloseConfirm = false
+    @Published var isDragOver = false
+    @Published var isCopied = false
 
     private(set) var pdfURL: URL?
 
@@ -117,6 +123,10 @@ final class PDFExtractorEngine: ObservableObject {
         logOutput = ""
         extractedPagesText = [:]
         errorMessage = nil
+        currentPage = 1
+        pageInput = "1"
+        isCopied = false
+        showCloseConfirm = false
     }
 
     // MARK: 文字提取

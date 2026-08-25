@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 @preconcurrency import PDFKit
 @preconcurrency import Vision
 
@@ -99,6 +100,7 @@ enum PDFDocumentLoader {
 /// Actor 保证同一个 `PDFDocument` 只被一个串行执行上下文访问，避免 PDFKit 跨线程竞争。
 actor PDFExtractionWorker {
     private let document: PDFDocument
+    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     private init(document: PDFDocument) {
         self.document = document
@@ -158,32 +160,53 @@ actor PDFExtractionWorker {
         selections: [PDFSelection],
         request: PDFExtractionRequest
     ) async -> PageExtractionOutput {
-        var selectionsToCover: [PDFSelection] = []
+        var rawImage: CGImage?
+        
+        // 使用自动释放池包裹位图生成，防止连续 OCR 图像缓冲暴涨
+        autoreleasepool {
+            var selectionsToCover: [PDFSelection] = []
 
-        if request.scenario == .scannedTextWithTextWatermark,
-           request.eraseImageWatermark,
-           !request.watermarkFilters.isEmpty {
-            selectionsToCover = selections.filter { selection in
-                guard let text = selection.string else { return false }
-                return containsWatermark(
-                    text: text,
-                    filters: request.watermarkFilters,
-                    ignoreCase: request.ignoreCase
-                )
+            if request.scenario == .scannedTextWithTextWatermark,
+               request.eraseImageWatermark,
+               !request.watermarkFilters.isEmpty {
+                selectionsToCover = selections.filter { selection in
+                    guard let text = selection.string else { return false }
+                    return containsWatermark(
+                        text: text,
+                        filters: request.watermarkFilters,
+                        ignoreCase: request.ignoreCase
+                    )
+                }
             }
+
+            rawImage = renderPageToCGImage(
+                page: page,
+                watermarkSelections: selectionsToCover
+            )
         }
 
-        guard let image = renderPageToCGImage(
-            page: page,
-            watermarkSelections: selectionsToCover
-        ) else {
+        guard let initialImage = rawImage else {
             return PageExtractionOutput(
                 text: "",
                 warning: "第 \(pageNumber) 页无法渲染为图像，OCR 已跳过。"
             )
         }
 
-        let ocrOutput = await performLocalOCR(on: image)
+        // 应用 Core Image 滤镜进行色阶与色彩预处理（抹除浅灰水印或彩色印章）
+        let processedImage: CGImage
+        if request.removeLightWatermarks || request.removeColorStamps {
+            processedImage = autoreleasepool {
+                applyImageWatermarkFilters(
+                    to: initialImage,
+                    removeLightWatermarks: request.removeLightWatermarks,
+                    removeColorStamps: request.removeColorStamps
+                ) ?? initialImage
+            }
+        } else {
+            processedImage = initialImage
+        }
+
+        let ocrOutput = await performLocalOCR(on: processedImage)
         guard !Task.isCancelled else {
             return PageExtractionOutput(text: "", warning: nil)
         }
@@ -257,7 +280,7 @@ actor PDFExtractionWorker {
         }
     }
 
-    /// OCR 结果允许删除正文内部的水印残留，但忽略单字符词，降低误伤概率。
+    /// OCR 结果过滤水印残留，严格限定仅过滤独立行或长词，避免误伤正文短词。
     private func cleanOCRText(
         _ text: String,
         filters: Set<String>,
@@ -289,6 +312,41 @@ actor PDFExtractionWorker {
             }
         }
         return normalizedLines.joined(separator: "\n")
+    }
+
+    /// 借鉴开源成熟方案，使用 macOS 原生 Core Image 对图像执行色阶与色彩预处理。
+    /// 浅灰/浅色水印（亮度较高）被拉伸为纯白，深黑字迹保持清晰；彩色印章可转单色过滤。
+    private func applyImageWatermarkFilters(
+        to image: CGImage,
+        removeLightWatermarks: Bool,
+        removeColorStamps: Bool
+    ) -> CGImage? {
+        var ciImage = CIImage(cgImage: image)
+
+        // 1. 如果需要滤除彩色印章，先将图像转为灰度，抹平色相差异
+        if removeColorStamps {
+            if let grayFilter = CIFilter(name: "CIPhotoEffectMono") {
+                grayFilter.setValue(ciImage, forKey: kCIInputImageKey)
+                if let output = grayFilter.outputImage {
+                    ciImage = output
+                }
+            }
+        }
+
+        // 2. 浅色/灰度水印消除：通过提升对比度与曝光度，将背景浅灰（>180）推到纯白（255）
+        if removeLightWatermarks {
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                // 适度增加对比度与亮度，压平背景杂色与浅灰印
+                colorControls.setValue(1.45, forKey: kCIInputContrastKey)
+                colorControls.setValue(0.12, forKey: kCIInputBrightnessKey)
+                if let output = colorControls.outputImage {
+                    ciImage = output
+                }
+            }
+        }
+
+        return ciContext.createCGImage(ciImage, from: ciImage.extent)
     }
 
     /// 将页面最长边限制在 4,096 像素，单页 RGBA 缓冲上限约为 64 MiB。

@@ -1,21 +1,21 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - 右侧结果检查器
+// MARK: - 右侧结果检查器 (macOS 原生 Inspector)
 struct ResultInspectorView: View {
     @ObservedObject var engine: PDFExtractorEngine
     @ObservedObject var aiEngine: AIProcessingEngine
     @Binding var currentPage: Int
     var onStartExtraction: () -> Void
     
-    @State private var selectedPane: ResultPane = .raw
+    @AppStorage("resultInspectorPane") private var selectedPane: ResultPane = .raw
     
     @AppStorage("systemPrompt") private var systemPrompt = AIPromptBuilder.defaultSystemPrompt
     @AppStorage("customWatermarks") private var customWatermarks = ""
     
     enum ResultPane: String, CaseIterable, Identifiable {
         case raw = "原文"
-        case ai = "AI"
+        case ai = "AI 净化"
         
         var id: String { rawValue }
     }
@@ -51,7 +51,7 @@ struct ResultInspectorView: View {
                     .foregroundStyle(Color.accentColor)
                 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("结果")
+                    Text("结果检查器")
                         .font(.system(.headline, design: .default).weight(.semibold))
                     Text("第 \(currentPage) 页")
                         .font(.caption)
@@ -59,6 +59,16 @@ struct ResultInspectorView: View {
                 }
                 
                 Spacer()
+                
+                // 一键复制当前页按钮
+                Button(action: copyCurrentPageText) {
+                    Label(engine.isCopied ? "已复制" : "复制", systemImage: engine.isCopied ? "checkmark" : "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(currentActiveText.isEmpty)
+                .help("复制当前页文本到系统剪贴板")
                 
                 if engine.isProcessing || aiEngine.isAIProcessing {
                     ProgressView()
@@ -245,6 +255,33 @@ struct ResultInspectorView: View {
                     .buttonStyle(.bordered)
                     .disabled(aiEngine.aiPagesText.isEmpty)
                 }
+            }
+        }
+    }
+    
+    private var currentActiveText: String {
+        if selectedPane == .raw {
+            return engine.extractedPagesText[currentPage] ?? ""
+        } else {
+            return aiEngine.aiPagesText[currentPage] ?? ""
+        }
+    }
+    
+    private func copyCurrentPageText() {
+        let textToCopy = currentActiveText
+        guard !textToCopy.isEmpty else { return }
+        
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(textToCopy, forType: .string)
+        
+        withAnimation(.easeInOut(duration: 0.15)) {
+            engine.isCopied = true
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                engine.isCopied = false
             }
         }
     }

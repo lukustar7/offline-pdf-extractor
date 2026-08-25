@@ -314,11 +314,18 @@ final class AIProcessingEngine: ObservableObject {
         processNextPage(token: token)
     }
 
+    private var aiFailedPagesCount = 0
+
     private func processNextPage(token: UUID) {
         guard isAIProcessing, currentAIToken == token else { return }
 
         guard !pendingPagesToProcess.isEmpty else {
-            aiProgressStatus = "本地 AI 净化已完成。"
+            if aiFailedPagesCount > 0 {
+                let successCount = aiTotalChunks - aiFailedPagesCount
+                aiProgressStatus = "本地 AI 净化完成：\(successCount) 页成功，\(aiFailedPagesCount) 页异常。"
+            } else {
+                aiProgressStatus = "本地 AI 净化已全部完成。"
+            }
             isAIProcessing = false
             activeEndpoint = nil
             activeModel = ""
@@ -337,7 +344,6 @@ final class AIProcessingEngine: ObservableObject {
         currentPageIndexProcessing = nextPage.pageIndex
         currentPageText = ""
         pendingOutputBuffer = ""
-        currentPageText = ""
         lastUIUpdateTime = Date.distantPast
         aiProgressStatus = "本地 AI 正在净化第 \(nextPage.pageIndex) 页（\(aiCurrentChunkIndex + 1) / \(aiTotalChunks)）..."
 
@@ -420,7 +426,14 @@ final class AIProcessingEngine: ObservableObject {
 
         if let error = error as NSError? {
             if error.code == NSURLErrorCancelled { return }
-            finishAIProcessingWithError("AI 生成中断：\(error.localizedDescription)")
+            // 单页发生异常时，记录错误标记并允许任务继续处理下一页，避免全盘中断
+            if let pageNumber = currentPageIndexProcessing {
+                aiPagesText[pageNumber] = "⚠️ [第 \(pageNumber) 页 AI 净化失败：\(error.localizedDescription)]"
+            }
+            aiFailedPagesCount += 1
+            aiCurrentChunkIndex += 1
+            currentPageIndexProcessing = nil
+            processNextPage(token: token)
             return
         }
 
@@ -439,6 +452,7 @@ final class AIProcessingEngine: ObservableObject {
         currentPageIndexProcessing = nil
         currentStreamRequestID = nil
         pendingOutputBuffer = ""
+        aiFailedPagesCount = 0
 
         currentAITask?.cancel()
         currentAITask = nil
@@ -468,6 +482,7 @@ final class AIProcessingEngine: ObservableObject {
         aiProgressStatus = ""
         aiTotalChunks = 0
         aiCurrentChunkIndex = 0
+        aiFailedPagesCount = 0
     }
 
     private func appendDeltaText(_ text: String) {

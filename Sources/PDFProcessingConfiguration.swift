@@ -108,6 +108,8 @@ struct PDFExtractionRequest: Sendable {
     let watermarkFilters: Set<String>
     let ignoreCase: Bool
     let eraseImageWatermark: Bool
+    let removeLightWatermarks: Bool
+    let removeColorStamps: Bool
     let targetPages: [Int]
 
     /// 构建请求时立即校验页码，并合并自动识别与手动输入的水印词。
@@ -116,7 +118,9 @@ struct PDFExtractionRequest: Sendable {
         activeWatermarks: Set<String>,
         customWatermarks: String,
         ignoreCase: Bool,
-        eraseImageWatermark: Bool,
+        eraseImageWatermark: Bool = false,
+        removeLightWatermarks: Bool = true,
+        removeColorStamps: Bool = false,
         pageRangeString: String,
         maximumPageCount: Int
     ) throws {
@@ -126,6 +130,8 @@ struct PDFExtractionRequest: Sendable {
         )
         self.ignoreCase = ignoreCase
         self.eraseImageWatermark = eraseImageWatermark
+        self.removeLightWatermarks = removeLightWatermarks
+        self.removeColorStamps = removeColorStamps
         self.targetPages = try PageRangeParser.parse(
             pageRangeString,
             maximumPageCount: maximumPageCount

@@ -34,6 +34,13 @@ struct PDFExtractorApp: App {
                     NotificationCenter.default.post(name: NSNotification.Name("StartAINotification"), object: nil)
                 }
             }
+            
+            // 4. 在“帮助”菜单下注入“欢迎使用 PDF 文字提取”入口，便于随时调出开屏介绍。
+            CommandGroup(replacing: .help) {
+                Button("欢迎使用 PDF 文字提取") {
+                    NotificationCenter.default.post(name: NSNotification.Name("ShowWelcomeSheetNotification"), object: nil)
+                }
+            }
         }
     }
 }

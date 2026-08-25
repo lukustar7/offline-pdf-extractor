@@ -101,13 +101,15 @@ struct PDFExtractorCoreTests {
             }
         }
 
-        suite.run("提取请求冻结校验后的输入") {
+        suite.run("提取请求冻结校验后的输入与图像去水印参数") {
             let request = try PDFExtractionRequest(
                 scenario: .fullyScanned,
                 activeWatermarks: ["内部资料"],
                 customWatermarks: "样张，内部资料\nCONFIDENTIAL",
                 ignoreCase: true,
                 eraseImageWatermark: false,
+                removeLightWatermarks: true,
+                removeColorStamps: true,
                 pageRangeString: "2-3",
                 maximumPageCount: 5
             )
@@ -116,6 +118,8 @@ struct PDFExtractorCoreTests {
                 request.watermarkFilters == ["内部资料", "样张", "CONFIDENTIAL"],
                 "水印词没有正确合并去重"
             )
+            try require(request.removeLightWatermarks, "浅色水印消除未正确捕获")
+            try require(request.removeColorStamps, "彩色印章过滤未正确捕获")
         }
     }
 

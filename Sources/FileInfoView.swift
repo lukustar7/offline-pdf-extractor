@@ -8,7 +8,7 @@ struct FileInfoView: View {
     var onClear: () -> Void
     
     // 弹窗二次确认状态，防止用户误触清空已提取文本与 AI 结果。
-    @State private var showConfirm = false
+    @AppStorage("fileInfoShowConfirm") private var showConfirm = false
     
     var body: some View {
         GroupBox {

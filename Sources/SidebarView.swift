@@ -8,6 +8,8 @@ struct SidebarView: View {
     // 使用 @AppStorage 对用户偏好进行持久化保存，防止重启丢失配置
     @AppStorage("ignoreCase") private var ignoreCase = true
     @AppStorage("eraseImageWatermark") private var eraseImageWatermark = false
+    @AppStorage("removeLightWatermarks") private var removeLightWatermarks = true
+    @AppStorage("removeColorStamps") private var removeColorStamps = false
     @AppStorage("pageRangeString") private var pageRangeString = ""
     @AppStorage("customWatermarks") private var customWatermarks = ""
     
@@ -20,10 +22,10 @@ struct SidebarView: View {
     @AppStorage("systemPrompt") private var systemPrompt = AIPromptBuilder.defaultSystemPrompt
     
     // 侧边栏当前激活的 Tab：0 -> 提取设置, 1 -> AI 设置
-    @State private var activeSidebarTab = 0
-    @State private var isSettingsExpanded = true
-    @State private var isWatermarkExpanded = true
-    @State private var isAIExpanded = true
+    @AppStorage("activeSidebarTab") private var activeSidebarTab = 0
+    @AppStorage("isSettingsExpanded") private var isSettingsExpanded = true
+    @AppStorage("isWatermarkExpanded") private var isWatermarkExpanded = true
+    @AppStorage("isAIExpanded") private var isAIExpanded = true
     
     var body: some View {
         VStack(spacing: 0) {
@@ -151,6 +153,27 @@ struct SidebarView: View {
                                         
                                         Toggle("忽略字母大小写", isOn: $ignoreCase)
                                             .toggleStyle(.checkbox)
+                                        
+                                        // 3. 扫描件 Core Image 图像去水印
+                                        if processingScenario != .electronicTextWithTextWatermark {
+                                            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                                Toggle("智能消除浅色/浅灰背景水印", isOn: $removeLightWatermarks)
+                                                    .toggleStyle(.checkbox)
+                                                Text("利用 Core Image 智能拉伸图像明度，在 OCR 前洗白浅色杂印，显著提升文字识别清晰度。")
+                                                    .font(.system(.caption2))
+                                                    .foregroundColor(.secondary)
+                                                    .lineSpacing(2)
+                                                
+                                                Toggle("滤除红蓝彩色印章", isOn: $removeColorStamps)
+                                                    .toggleStyle(.checkbox)
+                                                    .padding(.top, 2)
+                                                Text("抹平红蓝彩色图层，消除审批章与公章字符对正文 OCR 的粘连干扰。")
+                                                    .font(.system(.caption2))
+                                                    .foregroundColor(.secondary)
+                                                    .lineSpacing(2)
+                                            }
+                                            .padding(.top, 2)
+                                        }
                                         
                                         if processingScenario == .scannedTextWithTextWatermark {
                                             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
