@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - 主容器视图 (macOS 原生工作台架构)
 struct ContentView: View {
     @StateObject private var engine = PDFExtractorEngine()
-    @StateObject private var aiEngine = AIProcessingEngine()
+    @ObservedObject var aiEngine: AIProcessingEngine
     
     // 左右侧栏折叠状态控制 (持久化保存用户视口偏好)
     @AppStorage("showSidebar") private var showSidebar = true
@@ -11,6 +11,10 @@ struct ContentView: View {
     
     // 首次启动欢迎弹窗状态
     @AppStorage("hasShownWelcomeSheet") private var hasShownWelcomeSheet = false
+    
+    // 提取范围模式
+    @AppStorage("pageRangeMode") private var pageRangeMode = 0
+    @AppStorage("pageRangeString") private var pageRangeString = ""
     
     var body: some View {
         ZStack {
@@ -27,15 +31,12 @@ struct ContentView: View {
                 )
                 .transition(.opacity)
             } else {
-                // 2. 文件载入完成后，展示可折叠的 Sidebar + PDF Canvas + Inspector 原生工作台。
+                // 2. 文件载入完成后，展示可折叠的 页面缩略图侧栏 + PDF 画布 + 结果检查器 原生工作台。
                 HSplitView {
                     if showSidebar {
-                        SidebarView(
-                            engine: engine,
-                            aiEngine: aiEngine
-                        )
-                        .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
+                        SidebarThumbnailView(engine: engine)
+                            .frame(minWidth: 130, idealWidth: 160, maxWidth: 220)
+                            .transition(.move(edge: .leading).combined(with: .opacity))
                     }
                     
                     HSplitView {
@@ -52,7 +53,7 @@ struct ContentView: View {
                                 currentPage: $engine.currentPage,
                                 onStartExtraction: startExtractionAction
                             )
-                            .frame(minWidth: 280, idealWidth: 340, maxWidth: 440)
+                            .frame(minWidth: 280, idealWidth: 320, maxWidth: 400)
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                         }
                     }
@@ -82,7 +83,7 @@ struct ContentView: View {
                     }) {
                         Image(systemName: "sidebar.leading")
                     }
-                    .help(showSidebar ? "收起处理配置侧栏 (⌘⌥S)" : "展开处理配置侧栏 (⌘⌥S)")
+                    .help(showSidebar ? "收起页面缩略图 (⌘⌥S)" : "展开页面缩略图 (⌘⌥S)")
                     .keyboardShortcut("s", modifiers: [.command, .option])
                 }
             }
@@ -106,7 +107,7 @@ struct ContentView: View {
                                newPage >= 1 && newPage <= engine.pdfTotalPages {
                                 engine.currentPage = newPage
                             } else {
-                                engine.pageInput = String(engine.currentPage) // 输入无效时复原
+                                engine.pageInput = String(engine.currentPage)
                             }
                         })
                         .frame(width: 44)
@@ -141,22 +142,10 @@ struct ContentView: View {
                     .keyboardShortcut("o", modifiers: .command)
                     .help("导入 PDF 文件并自动分析 (⌘O)")
                 } else {
-                    Button(action: startExtractionAction) {
-                        Label("提取文字", systemImage: "play.fill")
+                    Button(action: openFileAction) {
+                        Label("更换文件", systemImage: "doc.badge.plus")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        engine.isProcessing
-                            || engine.isAnalyzingWatermarks
-                            || aiEngine.isAIProcessing
-                    )
-                    .keyboardShortcut("r", modifiers: .command)
-                    .help("开始执行文字提取与去水印 (⌘R)")
-                    
-                    Button(action: clearFileAction) {
-                        Label("关闭文件", systemImage: "xmark.circle")
-                    }
-                    .help("关闭当前 PDF 并清空提取缓存")
+                    .help("导入另一个 PDF 文档 (⌘O)")
                     
                     Button(action: {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -172,6 +161,7 @@ struct ContentView: View {
         }
         .onChange(of: engine.currentPage) { oldValue, newValue in
             engine.pageInput = String(newValue)
+            engine.preloadThumbnailsAround(pageNumber: newValue)
         }
         // 响应菜单/通知广播
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenFileNotification"))) { _ in
@@ -204,18 +194,10 @@ struct ContentView: View {
         }
     }
 
-    /// 所有导入入口统一经过这里，确保新文件不会继承上一份 PDF 的 AI 结果。
+    /// 所有导入入口统一经过这里
     private func loadPDF(_ url: URL) {
         aiEngine.clear()
-        engine.currentPage = 1
-        engine.pageInput = "1"
         engine.loadPDF(url: url)
-    }
-    
-    /// 关闭当前 PDF 并且清空引擎的所有物理缓存
-    private func clearFileAction() {
-        engine.clear()
-        aiEngine.clear()
     }
     
     /// 触发物理分段提取文字
@@ -223,7 +205,15 @@ struct ContentView: View {
         let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
         let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
         let ignoreCase = UserDefaults.standard.object(forKey: "ignoreCase") as? Bool ?? true
-        let pageRangeString = UserDefaults.standard.string(forKey: "pageRangeString") ?? ""
+        
+        let targetRangeString: String
+        if pageRangeMode == 1 {
+            targetRangeString = "\(engine.currentPage)"
+        } else if pageRangeMode == 2 {
+            targetRangeString = pageRangeString
+        } else {
+            targetRangeString = ""
+        }
         
         let scenarioRaw = UserDefaults.standard.string(forKey: "processingScenario") ?? PDFProcessingScenario.electronicTextWithTextWatermark.rawValue
         let scenario = PDFProcessingScenario(rawValue: scenarioRaw) ?? .electronicTextWithTextWatermark
@@ -240,7 +230,7 @@ struct ContentView: View {
                 eraseImageWatermark: eraseImageWatermark,
                 removeLightWatermarks: removeLightWatermarks,
                 removeColorStamps: removeColorStamps,
-                pageRangeString: pageRangeString,
+                pageRangeString: targetRangeString,
                 maximumPageCount: engine.pdfTotalPages
             )
             engine.currentPage = request.targetPages.first ?? 1
@@ -256,8 +246,9 @@ struct ContentView: View {
         let passWatermarks = UserDefaults.standard.bool(forKey: "aiPassWatermarks")
         let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
         let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
+        let storedPrompt = AIPromptBuilder.storedSystemPrompt()
         let finalPrompt = AIPromptBuilder.composedPrompt(
-            basePrompt: AIPromptBuilder.storedSystemPrompt(),
+            basePrompt: storedPrompt,
             showChanges: showChanges,
             passWatermarks: passWatermarks,
             activeWatermarks: active,
@@ -274,7 +265,7 @@ struct ContentView: View {
 
 #if canImport(PreviewsMacros)
 #Preview {
-    ContentView()
+    ContentView(aiEngine: AIProcessingEngine())
         .frame(minWidth: 1_000, minHeight: 700)
 }
 #endif

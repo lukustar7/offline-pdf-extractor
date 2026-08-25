@@ -3,9 +3,11 @@ import SwiftUI
 // MARK: - App 入口
 @main
 struct PDFExtractorApp: App {
+    @StateObject private var aiEngine = AIProcessingEngine()
+    
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(aiEngine: aiEngine)
                 .frame(minWidth: 1000, minHeight: 700)
         }
         .commands {
@@ -15,7 +17,6 @@ struct PDFExtractorApp: App {
             // 2. 注入系统菜单栏“文件”下的“导入 PDF 文件...”菜单项，并绑定 ⌘O 快捷键。
             CommandGroup(after: .importExport) {
                 Button("导入 PDF 文件...") {
-                    // 发送系统级通知，由主视图捕获并执行导入动作
                     NotificationCenter.default.post(name: NSNotification.Name("OpenFileNotification"), object: nil)
                 }
                 .keyboardShortcut("o", modifiers: .command)
@@ -24,13 +25,11 @@ struct PDFExtractorApp: App {
             // 3. 新建系统级“控制”主菜单，容纳“开始文字提取”(⌘R) 和 “AI 净化排版”指令。
             CommandMenu("控制") {
                 Button("开始文字提取") {
-                    // 发送提取文字通知
                     NotificationCenter.default.post(name: NSNotification.Name("StartExtractionNotification"), object: nil)
                 }
                 .keyboardShortcut("r", modifiers: .command)
                 
                 Button("AI 净化排版") {
-                    // 发送 AI 净化通知
                     NotificationCenter.default.post(name: NSNotification.Name("StartAINotification"), object: nil)
                 }
             }
@@ -41,6 +40,11 @@ struct PDFExtractorApp: App {
                     NotificationCenter.default.post(name: NSNotification.Name("ShowWelcomeSheetNotification"), object: nil)
                 }
             }
+        }
+        
+        // 5. 挂载标准 macOS 偏好设置窗口 (⌘,)
+        Settings {
+            SettingsView(aiEngine: aiEngine)
         }
     }
 }

@@ -26,6 +26,12 @@ final class PDFExtractorEngine: ObservableObject {
     @Published var showCloseConfirm = false
     @Published var isDragOver = false
     @Published var isCopied = false
+    @Published var thumbnails: [Int: NSImage] = [:]
+    @Published var comparisonOriginal: NSImage?
+    @Published var comparisonFiltered: NSImage?
+    @Published var isComparisonMode = false
+    @Published var zoomScale: CGFloat = 1.0
+    @Published var isScanningAnimating = false
 
     private(set) var pdfURL: URL?
 
@@ -76,6 +82,7 @@ final class PDFExtractorEngine: ObservableObject {
             // 后台创建完成后，PDFDocument 只交给主线程 PDFView 使用，不再返回后台工作器。
             self.pdfDocument = result.document
             self.pdfTotalPages = result.pageCount
+            self.preloadThumbnailsAround(pageNumber: 1)
             self.currentStatus = "就绪，正在自动分析水印词..."
             self.appendLog("文件成功加载：\(url.lastPathComponent)")
 
@@ -127,6 +134,56 @@ final class PDFExtractorEngine: ObservableObject {
         pageInput = "1"
         isCopied = false
         showCloseConfirm = false
+        thumbnails = [:]
+        comparisonOriginal = nil
+        comparisonFiltered = nil
+        isComparisonMode = false
+        zoomScale = 1.0
+    }
+
+    // MARK: 缩略图与去水印对比支持
+
+    /// 按需加载指定页码的轻量缩略图
+    func loadThumbnail(for pageNumber: Int) {
+        guard let document = pdfDocument,
+              pageNumber >= 1,
+              pageNumber <= pdfTotalPages,
+              thumbnails[pageNumber] == nil else { return }
+        
+        guard let page = document.page(at: pageNumber - 1) else { return }
+        if let thumb = PDFThumbnailLoader.thumbnail(for: page, targetWidth: 140) {
+            thumbnails[pageNumber] = thumb
+        }
+    }
+
+    /// 预加载当前可视窗口附近的缩略图
+    func preloadThumbnailsAround(pageNumber: Int) {
+        let start = max(1, pageNumber - 3)
+        let end = min(pdfTotalPages, pageNumber + 5)
+        for p in start...end {
+            loadThumbnail(for: p)
+        }
+    }
+
+    /// 针对当前页生成去水印前后对比图像
+    func updateComparisonPreview(removeLightWatermarks: Bool, removeColorStamps: Bool) {
+        guard let document = pdfDocument,
+              currentPage >= 1,
+              currentPage <= pdfTotalPages,
+              let page = document.page(at: currentPage - 1) else {
+            comparisonOriginal = nil
+            comparisonFiltered = nil
+            return
+        }
+
+        if let result = PDFThumbnailLoader.watermarkComparisonPreview(
+            for: page,
+            removeLightWatermarks: removeLightWatermarks,
+            removeColorStamps: removeColorStamps
+        ) {
+            comparisonOriginal = result.original
+            comparisonFiltered = result.filtered
+        }
     }
 
     // MARK: 文字提取

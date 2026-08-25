@@ -446,3 +446,60 @@ actor PDFExtractionWorker {
         }
     }
 }
+
+// MARK: - 页面缩略图与去水印对比预览生成器
+enum PDFThumbnailLoader {
+    /// 异步生成指定页面的轻量缩略图
+    static func thumbnail(for page: PDFPage, targetWidth: CGFloat = 160) -> NSImage? {
+        let bounds = page.bounds(for: .mediaBox)
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let scale = targetWidth / bounds.width
+        let targetHeight = bounds.height * scale
+        return page.thumbnail(of: NSSize(width: targetWidth, height: targetHeight), for: .mediaBox)
+    }
+    
+    /// 针对 Core Image 图像去水印生成预览对比图像 (Before / After)
+    static func watermarkComparisonPreview(
+        for page: PDFPage,
+        removeLightWatermarks: Bool,
+        removeColorStamps: Bool
+    ) -> (original: NSImage, filtered: NSImage)? {
+        let bounds = page.bounds(for: .mediaBox)
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let originalThumbnail = page.thumbnail(of: NSSize(width: 400, height: 400 * bounds.height / bounds.width), for: .mediaBox)
+        
+        guard let tiffData = originalThumbnail.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let cgImage = bitmap.cgImage else {
+            return nil
+        }
+        
+        var ciImage = CIImage(cgImage: cgImage)
+        if removeColorStamps {
+            if let monoFilter = CIFilter(name: "CIPhotoEffectMono") {
+                monoFilter.setValue(ciImage, forKey: kCIInputImageKey)
+                if let output = monoFilter.outputImage {
+                    ciImage = output
+                }
+            }
+        }
+        if removeLightWatermarks {
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                colorControls.setValue(1.45, forKey: kCIInputContrastKey)
+                colorControls.setValue(0.12, forKey: kCIInputBrightnessKey)
+                if let output = colorControls.outputImage {
+                    ciImage = output
+                }
+            }
+        }
+        
+        let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+        guard let filteredCGImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
+            return nil
+        }
+        let filteredImage = NSImage(cgImage: filteredCGImage, size: originalThumbnail.size)
+        return (original: originalThumbnail, filtered: filteredImage)
+    }
+}
+
