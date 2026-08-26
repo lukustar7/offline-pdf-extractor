@@ -58,7 +58,7 @@ struct PDFCanvasView: View {
                         .aspectRatio(contentMode: .fit)
                         .background(Color.white)
                         .paperShadow()
-                        .subtleBorder()
+                        .liquidGlassBorder()
                 }
                 
                 VStack(spacing: Theme.Spacing.xs) {
@@ -70,7 +70,7 @@ struct PDFCanvasView: View {
                         .aspectRatio(contentMode: .fit)
                         .background(Color.white)
                         .paperShadow()
-                        .subtleBorder()
+                        .liquidGlassBorder()
                 }
             }
             .padding(Theme.Spacing.xl)
@@ -197,11 +197,11 @@ struct PDFCanvasView: View {
             .padding(.vertical, 4)
             .help("自适应缩放至当前窗口大小")
         }
-        .padding(2)
+        .padding(4)
         .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow))
         .clipShape(Capsule())
-        .floatingHUDShadow()
-        .subtleBorder(cornerRadius: Theme.Radius.pill)
+        .liquidGlassPillBorder()
+        .floatingGlassShadow()
     }
     
     // MARK: - 扫描中微光扫描动效
@@ -263,8 +263,8 @@ struct PDFCanvasView: View {
         .padding(Theme.Spacing.md)
         .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow))
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-        .floatingHUDShadow()
-        .subtleBorder(cornerRadius: Theme.Radius.md)
+        .liquidGlassBorder(cornerRadius: Theme.Radius.md)
+        .floatingGlassShadow()
     }
     
     private var statusText: String {

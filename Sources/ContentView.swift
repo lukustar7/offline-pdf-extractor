@@ -180,6 +180,10 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowWelcomeSheetNotification"))) { _ in
             engine.showWelcomeSheet = true
         }
+        .onDisappear {
+            engine.cancelPDFExtraction(showStatus: false)
+            aiEngine.cancelAIProcessing(showStatus: false)
+        }
     }
     
     /// 导入文件
@@ -196,6 +200,7 @@ struct ContentView: View {
 
     /// 所有导入入口统一经过这里
     private func loadPDF(_ url: URL) {
+        aiEngine.cancelAIProcessing(showStatus: false)
         aiEngine.clear()
         engine.loadPDF(url: url)
     }
