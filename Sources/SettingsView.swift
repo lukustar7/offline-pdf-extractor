@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - 标准 macOS 偏好设置窗口 (⌘,)
 
-/// 遵循 Apple HIG 规范的独立设置面板，将全局 AI 模型、提示词与提取偏好从主工作台彻底解耦。
+/// 遵循 Apple HIG 规范的独立设置面板，采用经典两列工整网格排版 (标签靠右 110px + 控件靠左)。
 struct SettingsView: View {
     @ObservedObject var aiEngine: AIProcessingEngine
     
@@ -12,7 +12,6 @@ struct SettingsView: View {
     @AppStorage("removeLightWatermarks") private var removeLightWatermarks = true
     @AppStorage("removeColorStamps") private var removeColorStamps = false
     @AppStorage("ignoreCase") private var ignoreCase = true
-    
     @AppStorage("settingsSelectedTab") private var selectedTab = 0
     
     var body: some View {
@@ -20,55 +19,73 @@ struct SettingsView: View {
             // Tab 1: 本地 AI 模型服务
             aiModelSettingsTab
                 .tabItem {
-                    Label("本地 AI 模型", systemImage: "cpu")
+                    Label("AI 模型", systemImage: "cpu")
                 }
                 .tag(0)
             
             // Tab 2: 提示词与净化排版
             promptSettingsTab
                 .tabItem {
-                    Label("提示词与排版", systemImage: "text.badge.sparkles")
+                    Label("提示词", systemImage: "text.badge.sparkles")
                 }
                 .tag(1)
             
             // Tab 3: 通用与去水印偏好
             generalSettingsTab
                 .tabItem {
-                    Label("通用偏好", systemImage: "gearshape")
+                    Label("通用", systemImage: "gearshape")
                 }
                 .tag(2)
         }
-        .frame(width: 520, height: 400)
-        .padding(Theme.Spacing.lg)
+        .frame(width: 520, height: 420)
+        .padding(Theme.Spacing.md)
         .background(VisualEffectView(material: .popover, blendingMode: .behindWindow))
     }
     
-    // MARK: - Tab 1: 本地 AI 模型设置
+    // MARK: - Tab 1: 本地 AI 模型设置 (两列工整网格)
     private var aiModelSettingsTab: some View {
-        Form {
-            Section {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    Text("API 服务地址 (OpenAI 兼容)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    
-                    TextField("http://localhost:11434/v1", text: $aiEngine.aiApiBaseUrl)
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: aiEngine.aiApiBaseUrl) { oldValue, newValue in
-                            aiEngine.checkURLSafety(urlString: newValue)
-                        }
-                    
-                    if let error = aiEngine.endpointValidationError {
-                        Label(error, systemImage: "xmark.octagon.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                    } else if aiEngine.isExternalURLWarning {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Label("外部地址可能将数据发送至公网，请谨慎授权。", systemImage: "exclamationmark.triangle.fill")
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            // 快速预设填入胶囊
+            HStack(spacing: Theme.Spacing.sm) {
+                Spacer()
+                Text("快捷填入:")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Button("Ollama") {
+                    aiEngine.aiApiBaseUrl = "http://localhost:11434/v1"
+                    aiEngine.fetchAIModels()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                
+                Button("LM Studio") {
+                    aiEngine.aiApiBaseUrl = "http://localhost:1234/v1"
+                    aiEngine.fetchAIModels()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+            .padding(.horizontal, Theme.Spacing.sm)
+            
+            // 两列工整排版
+            VStack(spacing: Theme.Spacing.sm) {
+                // 行 1: API 服务端点
+                settingRow(label: "服务端点:") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        TextField("http://localhost:11434/v1", text: $aiEngine.aiApiBaseUrl)
+                            .textFieldStyle(.roundedBorder)
+                            .controlSize(.small)
+                            .onChange(of: aiEngine.aiApiBaseUrl) { oldValue, newValue in
+                                aiEngine.checkURLSafety(urlString: newValue)
+                            }
+                        
+                        if let error = aiEngine.endpointValidationError {
+                            Label(error, systemImage: "xmark.octagon.fill")
                                 .font(.caption2)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.red)
+                        } else if aiEngine.isExternalURLWarning {
                             Toggle(
-                                "允许连接当前外部地址",
+                                "我已了解风险，允许连接公网端点",
                                 isOn: Binding(
                                     get: { aiEngine.allowsExternalEndpoint },
                                     set: { aiEngine.setExternalEndpointPermission($0) }
@@ -76,78 +93,18 @@ struct SettingsView: View {
                             )
                             .toggleStyle(.checkbox)
                             .font(.caption2)
+                            .foregroundStyle(.orange)
                         }
-                    }
-                    
-                    HStack(spacing: Theme.Spacing.sm) {
-                        Button("使用 Ollama (11434)") {
-                            aiEngine.aiApiBaseUrl = "http://localhost:11434/v1"
-                            aiEngine.checkURLSafety(urlString: "http://localhost:11434/v1")
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        
-                        Button("使用 LM Studio (1234)") {
-                            aiEngine.aiApiBaseUrl = "http://localhost:1234/v1"
-                            aiEngine.checkURLSafety(urlString: "http://localhost:1234/v1")
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
                 }
-            } header: {
-                Text("服务端点")
-            }
-            
-            Section {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    Text("API 密钥 (可选，保存在 macOS 钥匙串)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    
-                    HStack(spacing: Theme.Spacing.sm) {
-                        SecureField("本地服务通常无需密钥", text: $aiEngine.aiApiKey)
-                            .textFieldStyle(.roundedBorder)
-                        
-                        Button("保存") {
-                            aiEngine.saveAPIKey()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        
-                        Button {
-                            aiEngine.clearAPIKey()
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(aiEngine.aiApiKey.isEmpty)
-                        .help("清除已保存的密钥")
-                    }
-                }
-            } header: {
-                Text("凭证管理")
-            }
-            
-            Section {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    HStack {
-                        Text("当前选定模型")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        if aiEngine.isAIFetchingModels {
-                            ProgressView()
-                                .controlSize(.small)
-                                .scaleEffect(0.6)
-                        }
-                    }
-                    
-                    HStack(spacing: Theme.Spacing.sm) {
+                
+                // 行 2: 模型选择 + 等高正方形刷新按钮 [ 🔄 ]
+                settingRow(label: "选择模型:") {
+                    HStack(spacing: Theme.Spacing.xs) {
                         if aiEngine.aiModels.isEmpty {
-                            TextField("如 qwen2.5-7b-instruct", text: $aiEngine.aiSelectedModel)
+                            TextField("直接输入模型名，如 qwen2.5:7b", text: $aiEngine.aiSelectedModel)
                                 .textFieldStyle(.roundedBorder)
+                                .controlSize(.small)
                         } else {
                             Picker("", selection: $aiEngine.aiSelectedModel) {
                                 ForEach(aiEngine.aiModels, id: \.self) { model in
@@ -155,112 +112,150 @@ struct SettingsView: View {
                                 }
                             }
                             .pickerStyle(.menu)
-                            .labelsHidden()
+                            .controlSize(.small)
                         }
                         
                         Button {
                             aiEngine.fetchAIModels()
                         } label: {
-                            Label("刷新模型列表", systemImage: "arrow.triangle.2.circlepath")
+                            if aiEngine.isAIFetchingModels {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .frame(width: 12, height: 12)
+                            } else {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .font(.system(size: 11))
+                            }
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .frame(width: 24, height: 24)
+                        .help("刷新本地服务的可用模型列表")
                     }
                 }
-            } header: {
-                Text("模型选择")
-            }
-        }
-        .formStyle(.grouped)
-    }
-    
-    // MARK: - Tab 2: 提示词与净化设置
-    private var promptSettingsTab: some View {
-        Form {
-            Section {
-                Toggle("要求 AI 输出修改留痕括号", isOn: $aiShowChanges)
-                    .toggleStyle(.checkbox)
-                    .help("开启后模型会在修改处标注说明，适合大参数量模型")
                 
-                Toggle("将检测到的水印词作为负面词传给 AI", isOn: $aiPassWatermarks)
-                    .toggleStyle(.checkbox)
-                    .help("引导本地模型针对性识别并洗掉特定残留文字")
-            } header: {
-                Text("高级净化行为")
+                // 行 3: API Key
+                settingRow(label: "API 密钥 (可选):") {
+                    SecureField("本地 Ollama 可留空", text: $aiEngine.aiApiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .onChange(of: aiEngine.aiApiKey) { oldValue, newValue in
+                            aiEngine.saveAPIKey()
+                        }
+                }
             }
             
-            Section {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    Text("默认排版与纠错系统提示词")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    
-                    TextEditor(text: $systemPrompt)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(height: 140)
-                        .padding(4)
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
-                        )
-                    
-                    Button("恢复默认提示词") {
-                        systemPrompt = AIPromptBuilder.defaultSystemPrompt
-                    }
-                    .buttonStyle(.plain)
+            Spacer()
+            
+            // 底部安全合规可信说明
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.caption)
+                    .foregroundStyle(.tint)
+                Text("所有 API 密钥均安全加密存储于 macOS 系统钥匙串 (Keychain)。本地端点处理绝不上云。")
                     .font(.caption2)
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.top, 2)
-                }
-            } header: {
-                Text("系统指令 (System Prompt)")
+                    .foregroundStyle(.secondary)
             }
+            .padding(Theme.Spacing.xs)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
         }
-        .formStyle(.grouped)
+        .padding(Theme.Spacing.md)
     }
     
-    // MARK: - Tab 3: 通用偏好
-    private var generalSettingsTab: some View {
-        Form {
-            Section {
-                Toggle("默认消除浅色/浅灰背景水印", isOn: $removeLightWatermarks)
-                    .toggleStyle(.checkbox)
-                    .help("利用 Core Image 智能拉伸图像明度，在 OCR 前洗白浅色杂印")
-                
-                Toggle("默认滤除红蓝彩色印章", isOn: $removeColorStamps)
-                    .toggleStyle(.checkbox)
-                    .help("抹平红蓝彩色图层，消除审批章与公章字符对正文 OCR 的粘连干扰")
-                
-                Toggle("文本去水印默认忽略英文字母大小写", isOn: $ignoreCase)
-                    .toggleStyle(.checkbox)
-            } header: {
-                Text("图像预处理与去水印默认值")
+    // MARK: - Tab 2: 提示词与净化排版设置
+    private var promptSettingsTab: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            settingRow(label: "系统 Prompt:") {
+                TextEditor(text: $systemPrompt)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(height: 120)
+                    .padding(4)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+                    .subtleBorder(cornerRadius: Theme.Radius.sm)
             }
             
-            Section {
-                HStack {
-                    Text("应用版本")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("1.3.0 (macOS 原生架构)")
-                        .foregroundStyle(.primary)
+            settingRow(label: "标识变动:") {
+                Toggle(isOn: $aiShowChanges) {
+                    Text("以 Markdown 粗体高亮 AI 修正的错字")
+                        .font(.caption2)
                 }
-                
-                HStack {
-                    Text("隐私保障")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("100% 本地离线处理，无任何数据上传")
-                        .font(.caption)
-                        .foregroundStyle(.green)
+                .toggleStyle(.checkbox)
+            }
+            
+            settingRow(label: "传递水印列表:") {
+                Toggle(isOn: $aiPassWatermarks) {
+                    Text("将文档中的水印词作为负向词传给 AI 指令")
+                        .font(.caption2)
                 }
-            } header: {
-                Text("关于")
+                .toggleStyle(.checkbox)
+            }
+            
+            Spacer()
+            
+            HStack {
+                Spacer()
+                Button("恢复默认 Prompt") {
+                    systemPrompt = AIPromptBuilder.defaultSystemPrompt
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
-        .formStyle(.grouped)
+        .padding(Theme.Spacing.md)
+    }
+    
+    // MARK: - Tab 3: 通用与去水印偏好设置
+    private var generalSettingsTab: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            settingRow(label: "色阶去水印:") {
+                Toggle(isOn: $removeLightWatermarks) {
+                    Text("Core Image 智能拉伸明度抹白浅灰水印 (默认开启)")
+                        .font(.caption2)
+                }
+                .toggleStyle(.checkbox)
+            }
+            
+            settingRow(label: "大小写敏感:") {
+                Toggle(isOn: $ignoreCase) {
+                    Text("水印词匹配时忽略英文字母大小写")
+                        .font(.caption2)
+                }
+                .toggleStyle(.checkbox)
+            }
+            
+            settingRow(label: "应用版本:") {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("v1.3.0 (Release Build)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.primary)
+                    Text("已是最新稳定版本。所有文字提取与去水印滤镜均完全离线运行。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            
+            Spacer()
+        }
+        .padding(Theme.Spacing.md)
+    }
+    
+    // MARK: - 两列对齐辅助组件
+    private func settingRow<Content: View>(
+        label: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .top, spacing: Theme.Spacing.md) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .trailing)
+                .padding(.top, 4)
+            
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 

@@ -23,11 +23,12 @@ struct Theme {
     
     /// 光影与层次系统
     struct Shadow {
-        /// 物理纸张立体环境光阴影 (双层复合模拟)
+        /// 物理纸张立体环境光阴影 (双层复合模拟 + 柔和蓝色环境呼吸光晕)
         static func paper<V: View>(_ view: V) -> some View {
             view
                 .shadow(color: Color.black.opacity(0.06), radius: 3, x: 0, y: 1)
                 .shadow(color: Color.black.opacity(0.12), radius: 16, x: 0, y: 8)
+                .shadow(color: Color.accentColor.opacity(0.12), radius: 32, x: 0, y: 0)
         }
         
         /// 悬浮胶囊/HUD 阴影
@@ -46,7 +47,7 @@ struct Theme {
 
 // MARK: - 常用视图修饰扩展
 extension View {
-    /// 物理纸张立体阴影
+    /// 物理纸张立体光晕阴影
     func paperShadow() -> some View {
         Theme.Shadow.paper(self)
     }
