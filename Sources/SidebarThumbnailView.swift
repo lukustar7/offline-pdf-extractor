@@ -3,17 +3,17 @@ import SwiftUI
 
 // MARK: - 左侧页面缩略图导航栏 (Apple HIG Preview/Keynote 风格)
 
-/// 取代原有杂乱冗长的表单侧栏，提供纯正原生的大纲与页面缩略图导航。
+/// 纯正原生的大纲与页面缩略图导航，支持非阻塞式异步生成与实时跳转。
 struct SidebarThumbnailView: View {
     @ObservedObject var engine: PDFExtractorEngine
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // 顶部导航栏标题与统计
             sidebarHeader
-            
+
             Divider()
-            
+
             // 页面缩略图纵向滚动流
             ScrollViewReader { proxy in
                 ScrollView {
@@ -44,26 +44,21 @@ struct SidebarThumbnailView: View {
                     }
                 }
             }
-            
-            Divider()
-            
-            // 底部轻量文件概览与关闭按钮
-            sidebarFooter
         }
-        .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
     }
-    
+
     private var sidebarHeader: some View {
         HStack {
             Image(systemName: "square.grid.2x2")
                 .foregroundStyle(.secondary)
                 .font(.caption)
-            Text("页面导航")
+            Text("缩略图")
                 .font(.system(.caption, design: .default).weight(.semibold))
                 .foregroundStyle(.secondary)
-            
+
             Spacer()
-            
+
             Text("共 \(engine.pdfTotalPages) 页")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -75,46 +70,7 @@ struct SidebarThumbnailView: View {
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.sm)
     }
-    
-    private var sidebarFooter: some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            Image(systemName: "doc.fill")
-                .font(.system(size: 14))
-                .foregroundStyle(.tint)
-            
-            VStack(alignment: .leading, spacing: 1) {
-                Text(engine.pdfFileName)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                Text(engine.pdfFileSize)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
-            
-            Spacer()
-            
-            Button {
-                engine.showCloseConfirm = true
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("关闭当前 PDF 文档")
-            .alert("关闭当前文件", isPresented: $engine.showCloseConfirm) {
-                Button("确定关闭", role: .destructive) {
-                    engine.clear()
-                }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("关闭当前文件将清除已提取的文本与 AI 结果，且无法撤销。")
-            }
-        }
-        .padding(Theme.Spacing.sm)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.5))
-    }
-    
+
     private func pageStatus(for page: Int) -> ThumbnailPageStatus {
         if engine.isProcessing && engine.currentPage == page {
             return .processing
@@ -140,7 +96,7 @@ private struct ThumbnailRowItem: View {
     let thumbnailImage: NSImage?
     let status: ThumbnailPageStatus
     let onSelect: () -> Void
-    
+
     var body: some View {
         Button(action: onSelect) {
             VStack(spacing: Theme.Spacing.xs) {
@@ -169,17 +125,17 @@ private struct ThumbnailRowItem: View {
                             .stroke(isSelected ? Color.accentColor : Color.black.opacity(0.08), lineWidth: isSelected ? 2.5 : 0.5)
                     )
                     .shadow(color: Color.black.opacity(isSelected ? 0.2 : 0.08), radius: isSelected ? 8 : 4, x: 0, y: isSelected ? 3 : 2)
-                    
-                    // 状态小圆点角标
+
+                    // 状态角标
                     statusBadge
                         .padding(4)
                 }
-                
+
                 // 页码文字标签
                 Text("\(pageNumber)")
                     .font(.system(size: 11, weight: isSelected ? .bold : .regular))
                     .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                    .padding(.horizontal, 6)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 1)
                     .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
                     .clipShape(Capsule())
@@ -189,7 +145,7 @@ private struct ThumbnailRowItem: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     @ViewBuilder
     private var statusBadge: some View {
         switch status {

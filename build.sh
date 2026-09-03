@@ -22,20 +22,24 @@ STAGING_MACOS="${STAGING_CONTENTS}/MacOS"
 STAGING_RESOURCES="${STAGING_CONTENTS}/Resources"
 PREVIOUS_APP=".build/previous-${APP_NAME}.app"
 
-echo "=== 构建 macOS PDF 文字提取工具 v1.3.0 ==="
+echo "=== 构建 macOS PDF 文字提取工具 v1.4.0 ==="
 
 echo "1/6 校验配置并运行核心测试..."
 plutil -lint Info.plist >/dev/null
 ./test.sh
 
 echo "2/6 使用 Swift 6 发布配置编译..."
-mkdir -p "${CACHE_DIR}" "${CONFIG_DIR}" "${SECURITY_DIR}"
+MODULE_CACHE_DIR="${ROOT_DIR}/.build/module-cache"
+export CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}"
+mkdir -p "${CACHE_DIR}" "${CONFIG_DIR}" "${SECURITY_DIR}" "${MODULE_CACHE_DIR}"
 SWIFT_BUILD_OPTIONS=(
     --cache-path "${CACHE_DIR}"
     --config-path "${CONFIG_DIR}"
     --security-path "${SECURITY_DIR}"
     --scratch-path "${SCRATCH_DIR}"
     --configuration release
+    --disable-sandbox
+    -Xswiftc -module-cache-path -Xswiftc "${MODULE_CACHE_DIR}"
 )
 
 BIN_DIR=$(swift build "${SWIFT_BUILD_OPTIONS[@]}" --show-bin-path)

@@ -28,6 +28,7 @@ swiftc \
     Sources/OpenAIStreamParser.swift \
     Sources/PageRangeParser.swift \
     Sources/PDFProcessingConfiguration.swift \
+    Sources/ParagraphReconstructor.swift \
     Tests/PDFExtractorCoreTests.swift \
     -o "${TEST_EXECUTABLE}"
 

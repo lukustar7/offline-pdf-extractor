@@ -10,6 +10,7 @@ struct PDFDocumentLoadResult: @unchecked Sendable {
     let document: PDFDocument
     let pageCount: Int
     let isLocked: Bool
+    let hasTextLayer: Bool
 }
 
 struct DetectedWatermark: Sendable {
@@ -34,10 +35,23 @@ enum PDFDocumentLoader {
     static func load(url: URL) async -> PDFDocumentLoadResult? {
         let task = Task.detached(priority: .userInitiated) { () -> PDFDocumentLoadResult? in
             guard let document = PDFDocument(url: url) else { return nil }
+
+            // 智能抽样前 5 页探测是否存在可直接读取的矢量字符层
+            var totalSampleChars = 0
+            let samplePages = min(document.pageCount, 5)
+            for i in 0..<samplePages {
+                if let page = document.page(at: i) {
+                    totalSampleChars += page.string?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0
+                }
+            }
+            let averageChars = samplePages > 0 ? (totalSampleChars / samplePages) : 0
+            let hasTextLayer = averageChars >= 25
+
             return PDFDocumentLoadResult(
                 document: document,
                 pageCount: document.pageCount,
-                isLocked: document.isLocked
+                isLocked: document.isLocked,
+                hasTextLayer: hasTextLayer
             )
         }
         return await withTaskCancellationHandler {
@@ -148,8 +162,10 @@ actor PDFExtractionWorker {
             )
         }
 
+        let rawText = extractTextLayer(selections: selections, request: request)
+        let formattedText = ParagraphReconstructor.reconstruct(rawText)
         return PageExtractionOutput(
-            text: extractTextLayer(selections: selections, request: request),
+            text: formattedText,
             warning: nil
         )
     }
@@ -216,10 +232,11 @@ actor PDFExtractionWorker {
             filters: request.watermarkFilters,
             ignoreCase: request.ignoreCase
         )
+        let formattedText = ParagraphReconstructor.reconstruct(cleanedText)
         let warning = ocrOutput.warning.map {
             "第 \(pageNumber) 页 OCR 失败：\($0)"
         }
-        return PageExtractionOutput(text: cleanedText, warning: warning)
+        return PageExtractionOutput(text: formattedText, warning: warning)
     }
 
     /// 文本层只删除整行完全匹配的水印，避免误删正文中恰好包含同一词语的句子。
@@ -314,39 +331,20 @@ actor PDFExtractionWorker {
         return normalizedLines.joined(separator: "\n")
     }
 
-    /// 借鉴开源成熟方案，使用 macOS 原生 Core Image 对图像执行色阶与色彩预处理。
-    /// 浅灰/浅色水印（亮度较高）被拉伸为纯白，深黑字迹保持清晰；彩色印章可转单色过滤。
+    /// 借鉴专业文档扫描方案，使用 Core Image 执行通道投影与色阶拉伸。
+    /// 红色印章在红通道投影下融于白纸，浅灰水印被对比度压平为纯白，黑字保持清晰。
     private func applyImageWatermarkFilters(
         to image: CGImage,
         removeLightWatermarks: Bool,
         removeColorStamps: Bool
     ) -> CGImage? {
-        var ciImage = CIImage(cgImage: image)
-
-        // 1. 如果需要滤除彩色印章，先将图像转为灰度，抹平色相差异
-        if removeColorStamps {
-            if let grayFilter = CIFilter(name: "CIPhotoEffectMono") {
-                grayFilter.setValue(ciImage, forKey: kCIInputImageKey)
-                if let output = grayFilter.outputImage {
-                    ciImage = output
-                }
-            }
-        }
-
-        // 2. 浅色/灰度水印消除：通过提升对比度与曝光度，将背景浅灰（>180）推到纯白（255）
-        if removeLightWatermarks {
-            if let colorControls = CIFilter(name: "CIColorControls") {
-                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
-                // 适度增加对比度与亮度，压平背景杂色与浅灰印
-                colorControls.setValue(1.45, forKey: kCIInputContrastKey)
-                colorControls.setValue(0.12, forKey: kCIInputBrightnessKey)
-                if let output = colorControls.outputImage {
-                    ciImage = output
-                }
-            }
-        }
-
-        return ciContext.createCGImage(ciImage, from: ciImage.extent)
+        let ciImage = CIImage(cgImage: image)
+        let filtered = DocumentImageFilter.process(
+            ciImage,
+            removeLightWatermarks: removeLightWatermarks,
+            removeColorStamps: removeColorStamps
+        )
+        return ciContext.createCGImage(filtered, from: filtered.extent)
     }
 
     /// 将页面最长边限制在 4,096 像素，单页 RGBA 缓冲上限约为 64 MiB。
@@ -447,6 +445,49 @@ actor PDFExtractionWorker {
     }
 }
 
+// MARK: - 科学级文档图像去水印与印章滤镜
+enum DocumentImageFilter {
+    /// 对图像执行色彩通道投影与色阶提亮
+    /// - 彩色印章消除：基于红通道投影（红色印章在红通道反射率高，与白纸融为一体，黑字吸光保持深黑），彻底避免单纯转灰度导致的文字污染
+    /// - 浅灰水印消除：通过高对比度和曝光度拉伸，将浅灰与杂印推入纯白 (255)
+    static func process(
+        _ ciImage: CIImage,
+        removeLightWatermarks: Bool,
+        removeColorStamps: Bool
+    ) -> CIImage {
+        var output = ciImage
+
+        // 1. 彩色印章消除：基于红通道投影，将红色印章与白底同化
+        if removeColorStamps {
+            if let matrix = CIFilter(name: "CIColorMatrix") {
+                matrix.setValue(output, forKey: kCIInputImageKey)
+                matrix.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+                matrix.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputGVector")
+                matrix.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputBVector")
+                matrix.setValue(CIVector(x: 0, y: 0, z: 0, w: 1), forKey: "inputAVector")
+                matrix.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
+                if let matrixOutput = matrix.outputImage {
+                    output = matrixOutput
+                }
+            }
+        }
+
+        // 2. 浅灰底纹/杂色消除：拉伸对比度与亮度，将浅灰背景推至纯白
+        if removeLightWatermarks {
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(output, forKey: kCIInputImageKey)
+                colorControls.setValue(1.5, forKey: kCIInputContrastKey)
+                colorControls.setValue(0.14, forKey: kCIInputBrightnessKey)
+                if let controlsOutput = colorControls.outputImage {
+                    output = controlsOutput
+                }
+            }
+        }
+
+        return output
+    }
+}
+
 // MARK: - 页面缩略图与去水印对比预览生成器
 enum PDFThumbnailLoader {
     /// 异步生成指定页面的轻量缩略图
@@ -457,7 +498,7 @@ enum PDFThumbnailLoader {
         let targetHeight = bounds.height * scale
         return page.thumbnail(of: NSSize(width: targetWidth, height: targetHeight), for: .mediaBox)
     }
-    
+
     /// 针对 Core Image 图像去水印生成预览对比图像 (Before / After)
     static func watermarkComparisonPreview(
         for page: PDFPage,
@@ -467,35 +508,22 @@ enum PDFThumbnailLoader {
         let bounds = page.bounds(for: .mediaBox)
         guard bounds.width > 0, bounds.height > 0 else { return nil }
         let originalThumbnail = page.thumbnail(of: NSSize(width: 400, height: 400 * bounds.height / bounds.width), for: .mediaBox)
-        
+
         guard let tiffData = originalThumbnail.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
               let cgImage = bitmap.cgImage else {
             return nil
         }
-        
-        var ciImage = CIImage(cgImage: cgImage)
-        if removeColorStamps {
-            if let monoFilter = CIFilter(name: "CIPhotoEffectMono") {
-                monoFilter.setValue(ciImage, forKey: kCIInputImageKey)
-                if let output = monoFilter.outputImage {
-                    ciImage = output
-                }
-            }
-        }
-        if removeLightWatermarks {
-            if let colorControls = CIFilter(name: "CIColorControls") {
-                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
-                colorControls.setValue(1.45, forKey: kCIInputContrastKey)
-                colorControls.setValue(0.12, forKey: kCIInputBrightnessKey)
-                if let output = colorControls.outputImage {
-                    ciImage = output
-                }
-            }
-        }
+
+        let ciImage = CIImage(cgImage: cgImage)
+        let processedCIImage = DocumentImageFilter.process(
+            ciImage,
+            removeLightWatermarks: removeLightWatermarks,
+            removeColorStamps: removeColorStamps
+        )
         
         let ciContext = CIContext(options: [.useSoftwareRenderer: false])
-        guard let filteredCGImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
+        guard let filteredCGImage = ciContext.createCGImage(processedCIImage, from: processedCIImage.extent) else {
             return nil
         }
         let filteredImage = NSImage(cgImage: filteredCGImage, size: originalThumbnail.size)

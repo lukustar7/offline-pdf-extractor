@@ -1,23 +1,25 @@
 import SwiftUI
 import PDFKit
 
-// MARK: - PDFKit 原生预览包装组件 (支持双向物理页码绑定与手势缩放)
+// MARK: - PDFKit 原生预览包装组件 (遵循 Apple Preview.app 纵向连续顺滑阅读体验)
+
 struct PDFPreviewView: NSViewRepresentable {
     let pdfDocument: PDFDocument?
     @Binding var currentPage: Int
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
-    
+
     func makeNSView(context: Context) -> PDFView {
         let pdfView = PDFView()
         pdfView.autoScales = true
-        pdfView.displayMode = .singlePage
-        pdfView.displayDirection = .horizontal
+        // 恢复为 Apple 原生纵向连续滚动阅读体验
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
         pdfView.displayBox = .mediaBox
         pdfView.backgroundColor = .clear
-        
+
         // 监听系统 PDFView 页面滚动改变通知
         NotificationCenter.default.addObserver(
             context.coordinator,
@@ -25,7 +27,7 @@ struct PDFPreviewView: NSViewRepresentable {
             name: .PDFViewPageChanged,
             object: pdfView
         )
-        
+
         // 监听外部缩放控制通知
         NotificationCenter.default.addObserver(
             context.coordinator,
@@ -45,21 +47,21 @@ struct PDFPreviewView: NSViewRepresentable {
             name: NSNotification.Name("PDFZoomFit"),
             object: nil
         )
-        
+
         context.coordinator.pdfView = pdfView
         return pdfView
     }
-    
+
     func updateNSView(_ nsView: PDFView, context: Context) {
         context.coordinator.parent = self
-        
+
         if nsView.document !== pdfDocument {
             nsView.document = pdfDocument
         }
-        
+
         guard let doc = nsView.document, doc.pageCount > 0 else { return }
         let safePageIndex = max(1, min(currentPage, doc.pageCount))
-        
+
         if let currentVisiblePage = nsView.currentPage {
             let actualPageIndex = doc.index(for: currentVisiblePage) + 1
             if actualPageIndex != safePageIndex {
@@ -81,24 +83,24 @@ struct PDFPreviewView: NSViewRepresentable {
     static func dismantleNSView(_ nsView: PDFView, coordinator: Coordinator) {
         NotificationCenter.default.removeObserver(coordinator)
     }
-    
+
     // MARK: - Coordinator 控制器
     class Coordinator: NSObject {
         var parent: PDFPreviewView
         weak var pdfView: PDFView?
         var isUpdatingFromParent = false
-        
+
         init(_ parent: PDFPreviewView) {
             self.parent = parent
         }
-        
+
         @MainActor
         @objc func handlePageChanged(_ notification: Notification) {
             guard !isUpdatingFromParent else { return }
             guard let pdfView = notification.object as? PDFView,
                   let doc = pdfView.document,
                   let visiblePage = pdfView.currentPage else { return }
-            
+
             let pageIndex = doc.index(for: visiblePage) + 1
             if parent.currentPage != pageIndex {
                 if pageIndex >= 1 && pageIndex <= doc.pageCount {
@@ -106,17 +108,17 @@ struct PDFPreviewView: NSViewRepresentable {
                 }
             }
         }
-        
+
         @MainActor
         @objc func handleZoomIn(_ notification: Notification) {
             pdfView?.zoomIn(nil)
         }
-        
+
         @MainActor
         @objc func handleZoomOut(_ notification: Notification) {
             pdfView?.zoomOut(nil)
         }
-        
+
         @MainActor
         @objc func handleZoomFit(_ notification: Notification) {
             pdfView?.autoScales = true

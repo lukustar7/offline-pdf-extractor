@@ -64,6 +64,7 @@ struct PDFExtractorCoreTests {
         runPageRangeTests(in: &suite)
         runEndpointTests(in: &suite)
         runStreamParserTests(in: &suite)
+        runParagraphReconstructorTests(in: &suite)
         suite.finish()
     }
 
@@ -258,4 +259,28 @@ struct PDFExtractorCoreTests {
         line.append(10)
         return line
     }
+
+    private static func runParagraphReconstructorTests(in suite: inout CoreTestSuite) {
+        suite.run("中文段内硬换行自动合并且标点正常分段") {
+            let input = "这是第一行的文字，后面\n还有一句话。这是第二句。\n\n这是新段落。"
+            let output = ParagraphReconstructor.reconstruct(input)
+            let expected = "这是第一行的文字，后面还有一句话。这是第二句。\n\n这是新段落。"
+            try require(output == expected, "中文断行合并错误，实际输出：\n\(output)")
+        }
+
+        suite.run("西文字符断行合并时自动补充空格") {
+            let input = "This is line one of\na test paragraph. Second line here.\nAnother line here."
+            let output = ParagraphReconstructor.reconstruct(input)
+            let expected = "This is line one of a test paragraph. Second line here.\n\nAnother line here."
+            try require(output == expected, "英文断行合并缺少空格，实际输出：\n\(output)")
+        }
+
+        suite.run("标题与序号列表独立成段不被合并") {
+            let input = "# 一级大标题\n正文首行文字\n正文次行文字。\n1. 第一项列表\n2. 第二项列表"
+            let output = ParagraphReconstructor.reconstruct(input)
+            try require(output.contains("# 一级大标题\n\n正文首行文字正文次行文字。"), "标题未独立分段")
+            try require(output.contains("1. 第一项列表\n\n2. 第二项列表"), "列表项未独立分段")
+        }
+    }
 }
+

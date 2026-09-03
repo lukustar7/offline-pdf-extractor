@@ -3,12 +3,17 @@ import SwiftUI
 // MARK: - PDF 导入待机空状态 (Launch & Empty State)
 
 /// 遵循 Apple HIG 规范的未打开文档待机主页，支持按钮选择与整页拖放单个 PDF，包含核心能力摘要。
+@MainActor
+private final class LaunchViewState: ObservableObject {
+    @Published var isDragOver = false
+}
+
 struct LaunchView: View {
     let errorMessage: String?
     let onFileSelected: (URL) -> Void
     let onInvalidFile: (String) -> Void
 
-    @AppStorage("launchDragOver") private var isDragOver = false
+    @StateObject private var state = LaunchViewState()
 
     var body: some View {
         VStack(spacing: Theme.Spacing.xl) {
@@ -17,8 +22,8 @@ struct LaunchView: View {
             // 核心待机引导视图
             ContentUnavailableView {
                 Label(
-                    isDragOver ? "松开以导入 PDF" : "拖放 PDF 文件到此处",
-                    systemImage: isDragOver ? "doc.badge.plus" : "doc.text.magnifyingglass"
+                    state.isDragOver ? "松开以导入 PDF" : "拖放 PDF 文件到此处",
+                    systemImage: state.isDragOver ? "doc.badge.plus" : "doc.text.magnifyingglass"
                 )
             } description: {
                 Text("支持电子版、扫描件、打印附带水印的各类 PDF 文档")
@@ -53,22 +58,22 @@ struct LaunchView: View {
                 LaunchFeatureCard(
                     icon: "bolt.horizontal.fill",
                     tint: .orange,
-                    title: "智能通道识别",
-                    subtitle: "自动匹配电子文本层提取或高精度 Vision OCR"
+                    title: "智能通道探测",
+                    subtitle: "自动识别文字层或匹配离线 Vision OCR"
                 )
 
                 LaunchFeatureCard(
                     icon: "wand.and.stars",
                     tint: .blue,
-                    title: "灰度滤镜去水印",
-                    subtitle: "色阶自动拉伸，智能抹平浅色杂印与彩色印章"
+                    title: "科学通道去水印",
+                    subtitle: "红通道滤除彩色公章，色阶洗白浅灰杂印"
                 )
 
                 LaunchFeatureCard(
-                    icon: "cpu.fill",
+                    icon: "text.alignleft",
                     tint: .indigo,
-                    title: "本地 AI 排版",
-                    subtitle: "修复错别字与断句，一键导出纯净 Markdown"
+                    title: "智能段落重构",
+                    subtitle: "自动合并生硬断行回车，可选本地 AI 精修"
                 )
             }
             .frame(maxWidth: 720)
@@ -77,13 +82,13 @@ struct LaunchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(Theme.Spacing.xl)
         .background(
-            isDragOver
+            state.isDragOver
                 ? Color.accentColor.opacity(0.08)
                 : Color(nsColor: .windowBackgroundColor)
         )
-        .animation(.easeInOut(duration: 0.15), value: isDragOver)
+        .animation(.easeInOut(duration: 0.15), value: state.isDragOver)
         .dropDestination(for: URL.self) { urls, _ in
-            isDragOver = false
+            state.isDragOver = false
             guard let url = urls.first else { return false }
             guard url.pathExtension.lowercased() == "pdf" else {
                 onInvalidFile("仅支持导入 PDF 格式的文件。")
@@ -92,7 +97,7 @@ struct LaunchView: View {
             onFileSelected(url)
             return true
         } isTargeted: { targeted in
-            isDragOver = targeted
+            state.isDragOver = targeted
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("PDF 文件待机导入页")

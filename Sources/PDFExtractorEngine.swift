@@ -32,6 +32,19 @@ final class PDFExtractorEngine: ObservableObject {
     @Published var isComparisonMode = false
     @Published var zoomScale: CGFloat = 1.0
     @Published var isScanningAnimating = false
+    @Published var hasTextLayer = true
+    @Published var detectedScenarioTitle = ""
+
+    var fullExtractedText: String {
+        extractedPagesText.keys.sorted().compactMap { page in
+            extractedPagesText[page].map { "[第 \(page) 页]\n\($0)" }
+        }
+        .joined(separator: "\n\n")
+    }
+
+    var totalExtractedWordCount: Int {
+        extractedPagesText.values.reduce(0) { $0 + $1.count }
+    }
 
     private(set) var pdfURL: URL?
 
@@ -82,6 +95,18 @@ final class PDFExtractorEngine: ObservableObject {
             // 后台创建完成后，PDFDocument 只交给主线程 PDFView 使用，不再返回后台工作器。
             self.pdfDocument = result.document
             self.pdfTotalPages = result.pageCount
+            self.hasTextLayer = result.hasTextLayer
+
+            if result.hasTextLayer {
+                self.detectedScenarioTitle = "电子可编辑文档 (极速文本)"
+                UserDefaults.standard.set(PDFProcessingScenario.electronicTextWithTextWatermark.rawValue, forKey: "processingScenario")
+                self.appendLog("智能探测：检测到丰富的可编辑文本层，已自动匹配【极速文本通道】。")
+            } else {
+                self.detectedScenarioTitle = "扫描件图像 (Vision OCR)"
+                UserDefaults.standard.set(PDFProcessingScenario.scannedTextWithTextWatermark.rawValue, forKey: "processingScenario")
+                self.appendLog("智能探测：页面为纯图像，已自动配置【Vision OCR 与滤镜去印通道】。")
+            }
+
             self.preloadThumbnailsAround(pageNumber: 1)
             self.currentStatus = "就绪，正在自动分析水印词..."
             self.appendLog("文件成功加载：\(url.lastPathComponent)")
@@ -139,6 +164,8 @@ final class PDFExtractorEngine: ObservableObject {
         comparisonFiltered = nil
         isComparisonMode = false
         zoomScale = 1.0
+        detectedScenarioTitle = ""
+        hasTextLayer = true
     }
 
     // MARK: 缩略图与去水印对比支持
@@ -149,7 +176,7 @@ final class PDFExtractorEngine: ObservableObject {
               pageNumber >= 1,
               pageNumber <= pdfTotalPages,
               thumbnails[pageNumber] == nil else { return }
-        
+
         guard let page = document.page(at: pageNumber - 1) else { return }
         if let thumb = PDFThumbnailLoader.thumbnail(for: page, targetWidth: 140) {
             thumbnails[pageNumber] = thumb
