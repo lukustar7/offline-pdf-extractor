@@ -1,6 +1,18 @@
-# PDF 本地文字提取工具
+<div align="center">
+  <img src="app_icon.png" width="128" height="128" alt="PDF 文字提取 图标" />
+  <h1>PDF 本地文字提取工具</h1>
+  <p><strong>macOS 原生 PDF 图文提取与去水印工具。PDF 解析、Core Image 图像预处理、Vision OCR、插图定位截取与 Word (.docx) 导出均在本机纯离线完成。</strong></p>
 
-macOS 原生 PDF 图文提取与去水印工具。PDF 解析、Core Image 图像预处理、Vision OCR、插图定位截取与 Word (.docx) 导出均在本机纯离线完成。
+  <p>
+    <a href="https://github.com/lukustar7/offline-pdf-extractor/releases"><img src="https://img.shields.io/badge/Release-v0.4.0-blue.svg" alt="Release: v0.4.0" /></a>
+    <a href="https://www.apple.com/macos/"><img src="https://img.shields.io/badge/Platform-macOS%2014.0%2B-lightgrey.svg" alt="Platform: macOS 14.0+" /></a>
+    <a href="https://developer.apple.com/apple-silicon/"><img src="https://img.shields.io/badge/Arch-Apple%20Silicon%20(ARM64)-orange.svg" alt="Architecture: ARM64" /></a>
+    <img src="https://img.shields.io/badge/Swift-6.0-red.svg" alt="Swift 6.0" />
+    <img src="https://img.shields.io/badge/Privacy-100%25%20Offline-success.svg" alt="100% Offline" />
+  </p>
+</div>
+
+---
 
 ## 功能
 
