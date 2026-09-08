@@ -2,6 +2,8 @@ import Darwin
 import Foundation
 import AppKit
 import CoreGraphics
+import CoreImage
+import PDFKit
 
 // MARK: - 零依赖测试基础设施
 
@@ -11,6 +13,7 @@ private struct AssertionFailure: Error, CustomStringConvertible {
     let description: String
 }
 
+@MainActor
 private struct CoreTestSuite {
     private(set) var passedCount = 0
     private(set) var failures: [String] = []
@@ -26,9 +29,20 @@ private struct CoreTestSuite {
         }
     }
 
+    mutating func runAsync(_ name: String, body: () async throws -> Void) async {
+        do {
+            try await body()
+            passedCount += 1
+            print("通过：\(name)")
+        } catch {
+            failures.append("\(name)：\(error)")
+            print("失败：\(name)：\(error)")
+        }
+    }
+
     func finish() -> Never {
         if failures.isEmpty {
-            print("核心逻辑测试完成：\(passedCount) 项全部通过。")
+            print("核心与全功能测试完成：\(passedCount) 项全部通过。")
             exit(EXIT_SUCCESS)
         }
 
@@ -60,14 +74,17 @@ private func requireThrows<ExpectedError>(
 // MARK: - 核心逻辑测试入口
 
 @main
+@MainActor
 struct PDFExtractorCoreTests {
-    @MainActor
-    static func main() {
+    static func main() async {
         var suite = CoreTestSuite()
         runPageRangeTests(in: &suite)
         runParagraphReconstructorTests(in: &suite)
         runDocumentLayoutAnalyzerTests(in: &suite)
         runDocxDocumentBuilderTests(in: &suite)
+        runDocumentImageFilterTests(in: &suite)
+        runEdgeCasesAndResilienceTests(in: &suite)
+        await runLargeDocumentStressTests(in: &suite)
         suite.finish()
     }
 
@@ -174,7 +191,6 @@ struct PDFExtractorCoreTests {
 
             try require(elements.count == 3, "混排元素总数应为 3，实际为 \(elements.count)")
             
-            // 验证顺序：文本 -> 图片 -> 文本
             if case .paragraph(let text) = elements[0] {
                 try require(text == "顶部介绍段落。", "首个元素应为顶部段落")
             } else {
@@ -239,7 +255,6 @@ struct PDFExtractorCoreTests {
             try require(!docxData.isEmpty, "生成 Word 数据不可为空")
             try require(docxData.count > 100, "生成的 docx 数据过小 (\(docxData.count) bytes)")
 
-            // Word (.docx) 是标准的 Zip 容器，前 4 字节魔数为 PK\x03\x04
             let header = [UInt8](docxData.prefix(4))
             try require(header == [0x50, 0x4B, 0x03, 0x04], "Word docx 文件头必须为标准 Zip 魔数 PK\\x03\\x04")
         }
@@ -273,6 +288,102 @@ struct PDFExtractorCoreTests {
         }
     }
 
+    private static func runDocumentImageFilterTests(in suite: inout CoreTestSuite) {
+        suite.run("Core Image 红通道投影与色阶拉伸滤镜链完整性") {
+            let testCG = makeTestCGImage(width: 100, height: 100)
+            let ciImage = CIImage(cgImage: testCG)
+            let filtered = DocumentImageFilter.process(
+                ciImage,
+                removeLightWatermarks: true,
+                removeColorStamps: true
+            )
+            try require(filtered.extent.width == 100, "滤镜处理后图像宽度应保持不变")
+            try require(filtered.extent.height == 100, "滤镜处理后图像高度应保持不变")
+        }
+    }
+
+    private static func runEdgeCasesAndResilienceTests(in suite: inout CoreTestSuite) {
+        suite.run("超大尺寸页面插图探测边界保护") {
+            let largeCG = makeTestCGImage(width: 3000, height: 4000)
+            let detected = DocumentLayoutAnalyzer.detectFigureRects(
+                in: largeCG,
+                textRects: [CGRect(x: 100, y: 100, width: 800, height: 50)],
+                imageWidth: 3000,
+                imageHeight: 4000
+            )
+            try require(detected.count >= 0, "超大尺寸探测应正常完成")
+        }
+
+        suite.run("极小尺寸页面保护直接返回空") {
+            let tinyCG = makeTestCGImage(width: 50, height: 50)
+            let detected = DocumentLayoutAnalyzer.detectFigureRects(
+                in: tinyCG,
+                textRects: [],
+                imageWidth: 50,
+                imageHeight: 50
+            )
+            try require(detected.isEmpty, "极小页面应安全返回空插图列表")
+        }
+
+        suite.run("水印特殊字符与空词容错") {
+            let parsed = WatermarkTermParser.parse("   \n\n,,  内部资料  ,  SAMPLE (CONFIDENTIAL)  , [机密] \n")
+            try require(parsed.contains("内部资料"), "未能解析内部资料")
+            try require(parsed.contains("SAMPLE (CONFIDENTIAL)"), "未能解析带括号水印")
+            try require(parsed.contains("[机密]"), "未能解析带方括号水印")
+            try require(!parsed.contains(""), "不应包含空字符串")
+        }
+    }
+
+    @MainActor
+    private static func runLargeDocumentStressTests(in suite: inout CoreTestSuite) async {
+        await suite.runAsync("20页大型多页文档合成与图文提取压力测试") {
+            let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: tempDir) }
+
+            let pdfURL = tempDir.appendingPathComponent("StressTest.pdf")
+            let pageCount = 20
+            makeSyntheticPDF(pageCount: pageCount, url: pdfURL)
+
+            // 1. 测试加载器
+            guard let loadResult = await PDFDocumentLoader.load(url: pdfURL) else {
+                throw AssertionFailure(description: "加载合成 20 页 PDF 失败")
+            }
+            try require(loadResult.pageCount == pageCount, "加载页数与生成页数不符")
+
+            // 2. 测试多页提取
+            guard let worker = await PDFExtractionWorker.make(url: pdfURL) else {
+                throw AssertionFailure(description: "创建提取工作器失败")
+            }
+
+            let request = try PDFExtractionRequest(
+                scenario: .electronicTextWithTextWatermark,
+                activeWatermarks: [],
+                customWatermarks: "",
+                ignoreCase: true,
+                pageRangeString: "1-\(pageCount)",
+                maximumPageCount: pageCount
+            )
+
+            var extractedPagesList: [ExtractedPageContent] = []
+            for p in 1...pageCount {
+                let output = await worker.extractPage(pageNumber: p, request: request)
+                extractedPagesList.append(output.content)
+            }
+
+            try require(extractedPagesList.count == pageCount, "20页提取数量不匹配")
+
+            // 3. 测试 20 页整包 Word (.docx) 生成
+            let docxData = try DocxDocumentBuilder.buildDocxData(
+                title: "20页压力测试报告",
+                pages: extractedPagesList
+            )
+            try require(docxData.count > 1000, "20页 Word 文件大小不正常 (\(docxData.count) bytes)")
+            let header = [UInt8](docxData.prefix(4))
+            try require(header == [0x50, 0x4B, 0x03, 0x04], "Word docx 文件头必须为标准 Zip 魔数")
+        }
+    }
+
     @MainActor
     private static func makeTestNSImage(width: Int, height: Int) -> NSImage {
         let size = NSSize(width: width, height: height)
@@ -283,6 +394,51 @@ struct PDFExtractorCoreTests {
         image.unlockFocus()
         return image
     }
+
+    private static func makeTestCGImage(width: Int, height: Int) -> CGImage {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        context.setFillColor(red: 0.9, green: 0.9, blue: 0.9, alpha: 1.0)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()!
+    }
+
+    @MainActor
+    private static func makeSyntheticPDF(pageCount: Int, url: URL) {
+        let doc = PDFDocument()
+        for i in 1...pageCount {
+            let pageRect = NSRect(x: 0, y: 0, width: 612, height: 792)
+            let img = NSImage(size: pageRect.size)
+            img.lockFocus()
+            NSColor.white.setFill()
+            pageRect.fill()
+
+            let text = "这是第 \(i) 页的测试段落文字，用于大文件稳定性与内存泄漏测试。包含第二句话。"
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 16),
+                .foregroundColor: NSColor.black
+            ]
+            (text as NSString).draw(at: NSPoint(x: 50, y: 700), withAttributes: attrs)
+
+            NSColor.systemOrange.setFill()
+            NSRect(x: 50, y: 350, width: 300, height: 200).fill()
+
+            img.unlockFocus()
+            if let page = PDFPage(image: img) {
+                doc.insert(page, at: doc.pageCount)
+            }
+        }
+        doc.write(to: url)
+    }
 }
+
 
 

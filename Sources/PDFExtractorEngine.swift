@@ -263,6 +263,7 @@ final class PDFExtractorEngine: ObservableObject {
         etaString = ""
         currentStatus = "准备开始处理..."
         extractedPagesText = [:]
+        extractedPages = [:]
         errorMessage = nil
 
         appendLog("\n=== 开始执行文字提取与去水印 ===")
@@ -356,6 +357,7 @@ final class PDFExtractorEngine: ObservableObject {
         pdfTotalPages = 0
         watermarkCandidates = []
         extractedPagesText = [:]
+        extractedPages = [:]
         progress = 0
         etaString = ""
         isAnalyzingWatermarks = true

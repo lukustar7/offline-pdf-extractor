@@ -176,7 +176,10 @@ actor PDFExtractionWorker {
         }
 
         let pageBounds = page.bounds(for: .mediaBox)
-        let renderedCG = renderPageToCGImage(page: page, watermarkSelections: [])
+        var renderedCG: CGImage?
+        autoreleasepool {
+            renderedCG = renderPageToCGImage(page: page, watermarkSelections: [])
+        }
 
         var textBlocks: [DocumentLayoutAnalyzer.TextBlockInfo] = []
         let scale: CGFloat = 2.0
@@ -198,12 +201,14 @@ actor PDFExtractionWorker {
         }
 
         if let cgImage = renderedCG {
-            let content = DocumentLayoutAnalyzer.analyzePage(
-                pageNumber: pageNumber,
-                pageImage: cgImage,
-                textBlocks: textBlocks,
-                watermarks: request.watermarkFilters
-            )
+            let content = autoreleasepool {
+                DocumentLayoutAnalyzer.analyzePage(
+                    pageNumber: pageNumber,
+                    pageImage: cgImage,
+                    textBlocks: textBlocks,
+                    watermarks: request.watermarkFilters
+                )
+            }
             let formattedText = ParagraphReconstructor.reconstruct(content.fullText)
             let finalContent = ExtractedPageContent(
                 pageNumber: pageNumber,
@@ -301,12 +306,14 @@ actor PDFExtractionWorker {
         }
 
         // 版面自适应分析：检测插图并与文字按纵向阅读顺序自然混排
-        let content = DocumentLayoutAnalyzer.analyzePage(
-            pageNumber: pageNumber,
-            pageImage: processedImage,
-            textBlocks: textBlocks,
-            watermarks: request.watermarkFilters
-        )
+        let content = autoreleasepool {
+            DocumentLayoutAnalyzer.analyzePage(
+                pageNumber: pageNumber,
+                pageImage: processedImage,
+                textBlocks: textBlocks,
+                watermarks: request.watermarkFilters
+            )
+        }
 
         let formattedText = ParagraphReconstructor.reconstruct(content.fullText)
         let finalContent = ExtractedPageContent(

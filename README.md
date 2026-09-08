@@ -38,7 +38,7 @@ macOS 原生 PDF 图文提取与去水印工具。PDF 解析、Core Image 图像
 ./build.sh
 ```
 
-`test.sh` 执行 13 项零依赖核心逻辑测试。`build.sh` 会再次运行测试，随后生成当前 Mac 处理器架构的 Release App，执行本地签名并校验最低系统版本。
+`test.sh` 执行 18 项零依赖核心逻辑与大文件压力测试。`build.sh` 会再次运行测试，随后生成当前 Mac 处理器架构的 Release App，执行本地签名并校验最低系统版本。
 
 ## 结构
 

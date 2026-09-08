@@ -18,6 +18,14 @@
 - 偏好设置窗口重构为极简三项（导出与插图、图像与去水印、隐私与关于）。
 - 更新 `Info.plist`，彻底移除本地网络权限声明与 ATS 配置，确立 100% 纯本地离线运行模式。
 
+### Fixed
+- 彻底清理 WelcomeView 与配置描述中的残留 AI 宣传文案，消除虚假宣传隐患。
+- 修复 PDF 引擎重载与重新提取时未彻底清空 `extractedPages` 导致的旧页面与插图内存滞留问题。
+- 在文本层提取与 OCR 混排分析中全面接入 `autoreleasepool`，阻断大文件连续处理时的临时位图显存堆积。
+- 修复导出 Markdown Zip 压缩包时覆盖写入已存在同名文件的隐患，并增加压缩退出状态校验。
+- 增加 PDFPreviewView.Coordinator 的 deinit 显式解绑，确保通知中心监听零野指针泄露。
+- 新增 20 页大文件合成提取与 Word 导出压力测试，全功能自动化测试扩充至 18 项全部通过。
+
 ### Removed
 - 彻底剥离 AI 子系统与外部模型连接，移除 `AIEndpoint.swift`、`AIProcessingEngine.swift`、`AIPromptBuilder.swift`、`OpenAIStreamParser.swift` 与 `KeychainHelper.swift`。
 - 移除应用菜单与界面中所有的 AI 净化按钮、状态标签与相关设置。

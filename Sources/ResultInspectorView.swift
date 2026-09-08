@@ -510,6 +510,9 @@ struct ResultInspectorView: View {
                         }
                     }
 
+                    // 清理可能已存在的同名目标文件，防止 zip 变为追加模式损坏压缩包
+                    try? FileManager.default.removeItem(at: url)
+
                     // 调用 zip 打包
                     let process = Process()
                     process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
@@ -517,6 +520,14 @@ struct ResultInspectorView: View {
                     process.arguments = ["-q", "-r", url.path, "."]
                     try process.run()
                     process.waitUntilExit()
+
+                    guard process.terminationStatus == 0 else {
+                        throw NSError(
+                            domain: "ZipExportError",
+                            code: Int(process.terminationStatus),
+                            userInfo: [NSLocalizedDescriptionKey: "压缩包生成失败，退出码：\(process.terminationStatus)"]
+                        )
+                    }
                 } catch {
                     engine.errorMessage = "导出 Markdown 失败：\(error.localizedDescription)"
                 }

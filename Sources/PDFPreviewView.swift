@@ -94,6 +94,10 @@ struct PDFPreviewView: NSViewRepresentable {
             self.parent = parent
         }
 
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
         @MainActor
         @objc func handlePageChanged(_ notification: Notification) {
             guard !isUpdatingFromParent else { return }

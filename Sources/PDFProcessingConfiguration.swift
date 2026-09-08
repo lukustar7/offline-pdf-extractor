@@ -95,7 +95,7 @@ enum PDFProcessingScenario: String, CaseIterable, Identifiable, Codable, Sendabl
         case .scannedTextWithTextWatermark:
             return "保留原始扫描图像执行 Vision OCR，再按电子水印词过滤残留；必要时才手动开启遮罩。"
         case .fullyScanned:
-            return "对整页图像执行 OCR，再按水印词过滤文本；重叠严重时可继续使用 AI 净化。"
+            return "对整页图像执行红通道投影与色阶去印预处理后执行 Vision OCR，并截取插图按序混排。"
         }
     }
 }
@@ -141,7 +141,7 @@ struct PDFExtractionRequest: Sendable {
 
 // MARK: - 水印词解析
 
-/// 统一解析用户输入的水印词，保证 PDF 引擎与 AI 提示词使用完全相同的结果。
+/// 统一解析用户输入的水印词，保证提取引擎过滤时使用精确去重的结果。
 enum WatermarkTermParser {
     static func parse(_ rawText: String) -> Set<String> {
         let terms = rawText

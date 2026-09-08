@@ -27,7 +27,7 @@ struct WelcomeView: View {
                     .font(.system(.title, design: .default).weight(.bold))
                     .padding(.top, Theme.Spacing.xs)
                 
-                Text("macOS 原生离线 · 智能去水印 · 隐私安全闭环")
+                Text("macOS 原生离线 · 图文插图留存 · 隐私安全闭环")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -49,22 +49,22 @@ struct WelcomeView: View {
                 FeatureRow(
                     icon: "wand.and.stars",
                     tint: .blue,
-                    title: "Core Image 色阶去水印",
-                    description: "智能拉伸图像明度，在 OCR 前洗白浅灰色、半透明背景水印与彩色印章。"
+                    title: "Core Image 滤镜去水印",
+                    description: "红通道消除彩色公章，智能拉伸明度洗白浅灰背景水印与底纹。"
                 )
                 
                 FeatureRow(
-                    icon: "cpu.fill",
+                    icon: "doc.richtext.fill",
                     tint: .indigo,
-                    title: "本地 AI 净化与排版",
-                    description: "可直连本地 Ollama / LM Studio 大模型，自动修复 OCR 错字与 Markdown 段落。"
+                    title: "Word (.docx) 图文单文件直出",
+                    description: "自动定位截取扫描件与电子版插图，按自然阅读顺序无损内嵌在单个 Word 文档中，开箱即用。"
                 )
                 
                 FeatureRow(
                     icon: "lock.shield.fill",
                     tint: .green,
                     title: "100% 本地隐私安全",
-                    description: "文档解析、文字处理与 AI 交互均在本地设备运行，数据绝不上传云端。"
+                    description: "文档解析、文字提取、插图截取与文档导出均在本地设备运行，数据绝不上云。"
                 )
             }
             .padding(.horizontal, Theme.Spacing.xxl)

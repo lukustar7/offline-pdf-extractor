@@ -29,6 +29,7 @@ swiftc \
     Sources/ParagraphReconstructor.swift \
     Sources/DocumentLayoutAnalyzer.swift \
     Sources/DocxDocumentBuilder.swift \
+    Sources/PDFExtractionWorker.swift \
     Tests/PDFExtractorCoreTests.swift \
     -o "${TEST_EXECUTABLE}"
 

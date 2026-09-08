@@ -210,8 +210,7 @@ This document is the authoritative design specification for **PDF Text & Waterma
 │ • State badges        │ • Viewport floating capsule     │ • Mode segmentation   │
 │ • Page jumping        │ • Scanning shimmer glow         │ • Markdown rich view  │
 │ • Quick close file    │ • Before/After split comparison │ • Copy & Export       │
-└───────────────────────┴─────────────────────────────────┴───────────────────────┘
-  ⚙️ Global App Settings (Ollama endpoint, Keychain API keys, prompt tuning) ➔ ⌘,
+  ⚙️ Global App Settings (Word Export, Core Image Filters, Privacy) ➔ ⌘,
 ```
 
 ### 1.1 Design Philosophy: "Authentic Apple Craftsmanship"
@@ -332,16 +331,17 @@ border-radius: 4px;
   2. *Watermark Toggles (Conditional)*: Checkbox with SF Symbol `questionmark.circle` (hover triggers detailed tooltip).
   3. *Page Range Menu*: Menu Picker (`全部页` / `当前页` / `指定范围`).
 
-### 6.4 AI Markdown Dual-Mode Result Pane (`aiTextPane`)
-- **Segmented Header**: Mini toggle between `[ 排版预览 ]` (Native Markdown rendered rich text) and `[ 源码 ]` (`SF Mono` code editor).
-- **Copy & Export Bar**: Top-right persistent `[ 📋 复制 ]` and `[ ⬇️ 导出 (TXT/MD) ]`.
+### 6.4 Document Studio Result Pane (`ResultInspectorView`)
+- **Segmented Header**: Mini toggle between `[ 当前页对照 ]` (single page comparison) and `[ 全篇大纲 ]` (full document card stream).
+- **Core Export**: Primary `[ 导出 Word (.docx) ]` single-file generation with lossless embedded images; secondary Menu for Markdown zip package and clipboard copy.
+- **Illustration Cards**: Embedded figures cropped from scan/vector layers with right-click copy & save.
 
 ### 6.5 Settings Modal (`SettingsView` — `⌘,`)
-- **Dimensions**: `520px × 400px` standard macOS preferences sheet.
+- **Dimensions**: `520px × 380px` standard macOS preferences sheet.
 - **Tabs**:
-  1. `[ 🧠 本地 AI 模型 ]`: Base URL presets (Ollama 11434 / LM Studio 1234), Keychain API Key manager, model selector.
-  2. `[ 📝 提示词与排版 ]`: System Prompt TextEditor, change-tagging toggle, negative watermark word injector.
-  3. `[ ⚙️ 通用偏好 ]`: Default Core Image filters, case-sensitivity rules, version metadata.
+  1. `[ 导出与插图 ]`: Word (.docx) default settings, illustration extraction toggle, paragraph reconstruction.
+  2. `[ 图像与去水印 ]`: Core Image level-stretch and red-channel filter toggles, case-sensitivity rules.
+  3. `[ 隐私与关于 ]`: 100% offline security guarantee, version metadata.
 
 ---
 
@@ -351,11 +351,11 @@ border-radius: 4px;
 - **DO** maintain 100% offline visual privacy guarantees (green badges for local execution).
 - **DO** use SF Symbols across all buttons and tabs with optical alignment.
 - **DO** rely on standard macOS shortcuts (`⌘O` Open, `⌘R` Extract, `⌘,` Settings, `⌘⌥S` Toggle Left, `⌘⌥I` Toggle Right).
-- **DO** keep the right inspector strictly 0-scroll under standard 700px window height.
+- **DO** keep controls spacious (36px/38px) and accessible.
 
 ### ❌ DON'T
 - **DON'T** stack multiple semi-transparent gray backgrounds (`.background(Color.gray.opacity(0.15))` is forbidden).
-- **DON'T** display raw AI endpoint configuration or long prompt text in the main workspace.
+- **DON'T** make network requests or declare network permissions.
 - **DON'T** use custom non-native window titlebars or alien UI widgets.
 - **DON'T** lock the UI thread during thumbnail generation or multi-page OCR.
 
