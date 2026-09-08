@@ -6,6 +6,13 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "${ROOT_DIR}"
 
+# 架构强制审查：仅支持 Apple Silicon (M 系列芯片)
+HOST_ARCH=$(uname -m)
+if [ "${HOST_ARCH}" != "arm64" ]; then
+    echo "错误：本项目专为 Apple Silicon (M 系列芯片，ARM64) 深度调优，不支持 Intel (${HOST_ARCH}) 架构。" >&2
+    exit 1
+fi
+
 APP_NAME="PDF文字提取"
 EXECUTABLE_NAME="PDFExtractor"
 APP_DIR="${APP_NAME}.app"
@@ -22,13 +29,13 @@ STAGING_MACOS="${STAGING_CONTENTS}/MacOS"
 STAGING_RESOURCES="${STAGING_CONTENTS}/Resources"
 PREVIOUS_APP=".build/previous-${APP_NAME}.app"
 
-echo "=== 构建 macOS PDF 文字提取工具 v1.5.0 ==="
+echo "=== 构建 macOS PDF 文字提取工具 v1.6.0 (纯血 Apple Silicon ARM64) ==="
 
 echo "1/6 校验配置并运行核心测试..."
 plutil -lint Info.plist >/dev/null
 ./test.sh
 
-echo "2/6 使用 Swift 6 发布配置编译..."
+echo "2/6 使用 Swift 6 发布配置编译 (ARM64)..."
 MODULE_CACHE_DIR="${ROOT_DIR}/.build/module-cache"
 export CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}"
 mkdir -p "${CACHE_DIR}" "${CONFIG_DIR}" "${SECURITY_DIR}" "${MODULE_CACHE_DIR}"
@@ -38,6 +45,7 @@ SWIFT_BUILD_OPTIONS=(
     --security-path "${SECURITY_DIR}"
     --scratch-path "${SCRATCH_DIR}"
     --configuration release
+    --triple "arm64-apple-macosx${DEPLOYMENT_TARGET}"
     --disable-sandbox
     -Xswiftc -module-cache-path -Xswiftc "${MODULE_CACHE_DIR}"
 )
@@ -60,9 +68,16 @@ else
     exit 1
 fi
 
-echo "5/6 执行本地签名与包完整性校验..."
+echo "5/6 执行本地签名与架构完整性校验..."
 codesign --force --deep --sign - "${STAGING_APP}"
 codesign --verify --deep --strict "${STAGING_APP}"
+
+# 严格校验二进制架构为 Apple Silicon ARM64
+BINARY_INFO=$(file "${STAGING_MACOS}/${EXECUTABLE_NAME}")
+if ! echo "${BINARY_INFO}" | grep -q "arm64"; then
+    echo "错误：二进制架构验证失败，非纯血 ARM64：${BINARY_INFO}" >&2
+    exit 1
+fi
 
 ACTUAL_MINIMUM_OS=$(otool -l "${STAGING_MACOS}/${EXECUTABLE_NAME}" \
     | awk '/minos/{print $2; exit}')
@@ -87,4 +102,11 @@ else
     exit 1
 fi
 
-echo "=== 构建完成：${APP_DIR}（最低 macOS ${DEPLOYMENT_TARGET}） ==="
+if [[ "${1:-}" == "--clean" ]]; then
+    echo "正在执行构建后磁盘瘦身..."
+    rm -rf "${SCRATCH_DIR}" "${STAGING_ROOT}"
+    echo "构建中间碎片已清理。"
+fi
+
+APP_SIZE=$(du -sh "${APP_DIR}" | awk '{print $1}')
+echo "=== 构建完成：${APP_DIR}（${APP_SIZE}，纯血 Apple Silicon ARM64，最低 macOS ${DEPLOYMENT_TARGET}） ==="

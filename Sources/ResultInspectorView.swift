@@ -50,7 +50,11 @@ struct ResultInspectorView: View {
                 Divider()
             }
 
-            // 3. 核心图文混排内容展示区
+            // 3. 核心三大处理模式横排大卡片按钮
+            modeSelectorRow
+            Divider()
+
+            // 4. 核心图文混排内容展示区
             documentContentArea
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -132,26 +136,6 @@ struct ResultInspectorView: View {
     // MARK: - 2. 折叠参数抽屉
     private var optionsDrawer: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            // 场景自动匹配与手动覆盖
-            HStack {
-                if !engine.detectedScenarioTitle.isEmpty {
-                    Label(engine.detectedScenarioTitle, systemImage: "sparkles")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
-                }
-
-                Spacer()
-
-                Picker("处理模式:", selection: $processingScenario) {
-                    ForEach(PDFProcessingScenario.allCases) { sc in
-                        Text(sc.title).tag(sc)
-                    }
-                }
-                .pickerStyle(.menu)
-                .controlSize(.regular)
-                .frame(width: 210)
-            }
-
             // 扫描件滤镜开关
             if processingScenario != .electronicTextWithTextWatermark {
                 HStack(spacing: Theme.Spacing.lg) {
@@ -265,7 +249,30 @@ struct ResultInspectorView: View {
         }
     }
 
-    // MARK: - 3. 核心图文混排展示区 (开阔阅读流)
+    // MARK: - 3. 三大处理模式横排大卡片按钮
+    private var modeSelectorRow: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            ForEach(PDFProcessingScenario.allCases) { scenario in
+                ModeCardButton(
+                    scenario: scenario,
+                    isSelected: processingScenario == scenario
+                ) {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                        processingScenario = scenario
+                        if scenario == .fullyScanned {
+                            removeLightWatermarks = true
+                            removeColorStamps = true
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.sm)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.2))
+    }
+
+    // MARK: - 4. 核心图文混排展示区 (开阔阅读流)
     private var documentContentArea: some View {
         ZStack {
             if engine.isProcessing && engine.extractedPages.isEmpty {
@@ -651,3 +658,56 @@ private struct EmptyStateView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
+
+// MARK: - 单个处理模式大卡片按钮
+private struct ModeCardButton: View {
+    let scenario: PDFProcessingScenario
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(spacing: 5) {
+                HStack(spacing: 5) {
+                    Image(systemName: scenario.systemImage)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                    Text(scenario.title)
+                        .font(.system(size: 12, weight: isSelected ? .bold : .semibold))
+                        .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.85))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
+
+                Text(scenario.subtitle)
+                    .font(.system(size: 10))
+                    .foregroundStyle(isSelected ? Color.secondary : Color.secondary.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, minHeight: 64)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 8)
+            .background(cardBackground)
+            .overlay(cardBorder)
+        }
+        .buttonStyle(.plain)
+        .help(scenario.statusDescription)
+    }
+
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+            .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor).opacity(0.5))
+    }
+
+    private var cardBorder: some View {
+        RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+            .strokeBorder(
+                isSelected ? Color.accentColor : Color.secondary.opacity(0.18),
+                lineWidth: isSelected ? 1.5 : 0.8
+            )
+    }
+}
+

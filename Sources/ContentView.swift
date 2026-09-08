@@ -131,23 +131,6 @@ struct ContentView: View {
                             .disabled(engine.currentPage >= engine.pdfTotalPages || engine.isProcessing)
                             .help("下一页")
                         }
-
-                        // 智能探针格式胶囊
-                        if !engine.detectedScenarioTitle.isEmpty {
-                            HStack(spacing: 5) {
-                                Image(systemName: engine.hasTextLayer ? "bolt.fill" : "wand.and.stars")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Color.accentColor)
-                                Text(engine.detectedScenarioTitle)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
-                            .clipShape(Capsule())
-                            .subtleBorder(cornerRadius: 12)
-                        }
                     }
                 }
             }
@@ -258,8 +241,14 @@ struct ContentView: View {
         let scenarioRaw = UserDefaults.standard.string(forKey: "processingScenario") ?? PDFProcessingScenario.electronicTextWithTextWatermark.rawValue
         let scenario = PDFProcessingScenario(rawValue: scenarioRaw) ?? .electronicTextWithTextWatermark
         let eraseImageWatermark = UserDefaults.standard.object(forKey: "eraseImageWatermark") as? Bool ?? false
-        let removeLightWatermarks = UserDefaults.standard.object(forKey: "removeLightWatermarks") as? Bool ?? true
-        let removeColorStamps = UserDefaults.standard.object(forKey: "removeColorStamps") as? Bool ?? false
+        var removeLightWatermarks = UserDefaults.standard.object(forKey: "removeLightWatermarks") as? Bool ?? true
+        var removeColorStamps = UserDefaults.standard.object(forKey: "removeColorStamps") as? Bool ?? false
+
+        // 如果用户选择了【强力去印识别】，自动开启红通道公章消除与色阶洗白滤镜
+        if scenario == .fullyScanned {
+            removeLightWatermarks = true
+            removeColorStamps = true
+        }
 
         do {
             let request = try PDFExtractionRequest(

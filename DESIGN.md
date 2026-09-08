@@ -1,6 +1,6 @@
 ---
 name: "PDF Text & Watermark Extractor (PDF 文字提取与去水印)"
-version: "1.3.0"
+version: "1.6.0"
 description: "Apple HIG compliant macOS native document productivity app design system. Features crystal-clear translucent vibrancy, physical paper elevation, zero-scroll inspector, and synchronized OCR workflow."
 author: "Google Antigravity & Design Team"
 specification: "Google Stitch Design MD v1.0 / W3C DTCG Aligned"
@@ -324,12 +324,13 @@ border-radius: 4px;
 - **Structure**: Rounded Capsule with `.hudWindow` material and 0.5px border.
 - **Controls**: `[ + Zoom In ]` `[ - Zoom Out ]` `|` `[ Fit Window ]`.
 
-### 6.3 0-Scroll Configuration Card (`inspectorConfigCard`)
-- **Container**: `card-background` with `radius.md` and 0.5px separator.
+### 6.3 Horizontal 3-Way Mode Selector Cards (`modeSelectorRow`)
+- **Placement**: Directly below the studio header inside `ResultInspectorView`.
+- **Structure**: 3 equal-width modern macOS cards side-by-side with accent border and subtle background fill upon selection.
 - **Items**:
-  1. *Scenario Picker*: 3-way Segmented Control (`电子文本` / `扫描正文` / `全扫描件`).
-  2. *Watermark Toggles (Conditional)*: Checkbox with SF Symbol `questionmark.circle` (hover triggers detailed tooltip).
-  3. *Page Range Menu*: Menu Picker (`全部页` / `当前页` / `指定范围`).
+  1. `[ ⚡️ 直接提取文字 ]`: For selectable text PDFs, 1-second native extraction with full layout and illustrations preserved.
+  2. `[ 📷 扫描件图文识别 ]`: For clean scans/photos, Apple Vision OCR + layout figure cropping.
+  3. `[ 🛡️ 强力去印识别 ]`: For stamped/darkened scans, automated red-channel stamp removal and level-stretch whitening filters before OCR.
 
 ### 6.4 Document Studio Result Pane (`ResultInspectorView`)
 - **Segmented Header**: Mini toggle between `[ 当前页对照 ]` (single page comparison) and `[ 全篇大纲 ]` (full document card stream).

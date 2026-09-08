@@ -33,7 +33,6 @@ final class PDFExtractorEngine: ObservableObject {
     @Published var zoomScale: CGFloat = 1.0
     @Published var isScanningAnimating = false
     @Published var hasTextLayer = true
-    @Published var detectedScenarioTitle = ""
     @Published var extractedPages: [Int: ExtractedPageContent] = [:]
 
     var fullExtractedText: String {
@@ -121,13 +120,9 @@ final class PDFExtractorEngine: ObservableObject {
             self.hasTextLayer = result.hasTextLayer
 
             if result.hasTextLayer {
-                self.detectedScenarioTitle = "电子可编辑文档 (极速文本)"
-                UserDefaults.standard.set(PDFProcessingScenario.electronicTextWithTextWatermark.rawValue, forKey: "processingScenario")
-                self.appendLog("智能探测：检测到丰富的可编辑文本层，已自动匹配【极速文本通道】。")
+                self.appendLog("文档底层包含可复制文字层，可选择【直接提取文字】或按需切换。")
             } else {
-                self.detectedScenarioTitle = "扫描件图像 (Vision OCR)"
-                UserDefaults.standard.set(PDFProcessingScenario.scannedTextWithTextWatermark.rawValue, forKey: "processingScenario")
-                self.appendLog("智能探测：页面为纯图像，已自动配置【Vision OCR 与滤镜去印通道】。")
+                self.appendLog("文档为纯图像扫描件，推荐选择【扫描件图文识别】或【强力去印识别】。")
             }
 
             self.preloadThumbnailsAround(pageNumber: 1)
@@ -188,7 +183,6 @@ final class PDFExtractorEngine: ObservableObject {
         comparisonFiltered = nil
         isComparisonMode = false
         zoomScale = 1.0
-        detectedScenarioTitle = ""
         hasTextLayer = true
     }
 

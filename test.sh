@@ -7,7 +7,12 @@ ROOT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "${ROOT_DIR}"
 
 SDK_PATH=$(xcrun --show-sdk-path --sdk macosx)
-ARCHITECTURE=$(uname -m)
+HOST_ARCH=$(uname -m)
+if [ "${HOST_ARCH}" != "arm64" ]; then
+    echo "错误：本项目专为 Apple Silicon (M 系列芯片，ARM64) 深度调优，不支持 Intel (${HOST_ARCH}) 架构。" >&2
+    exit 1
+fi
+ARCHITECTURE="arm64"
 DEPLOYMENT_TARGET="14.0"
 BUILD_DIR=".build/core-tests"
 MODULE_CACHE_DIR=".build/module-cache"

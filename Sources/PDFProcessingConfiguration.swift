@@ -38,33 +38,33 @@ enum PDFProcessingScenario: String, CaseIterable, Identifiable, Codable, Sendabl
     var title: String {
         switch self {
         case .electronicTextWithTextWatermark:
-            return "电子文本 + 电子水印"
+            return "直接提取文字"
         case .scannedTextWithTextWatermark:
-            return "扫描正文 + 电子水印"
+            return "扫描件图文识别"
         case .fullyScanned:
-            return "全扫描件"
+            return "强力去印识别"
         }
     }
 
     var subtitle: String {
         switch self {
         case .electronicTextWithTextWatermark:
-            return "正文和水印都可选中，直接清理文本层。"
+            return "常规活字 1秒搞定\n保留排版与高清插图"
         case .scannedTextWithTextWatermark:
-            return "正文是图片，水印是后加文本，先 OCR 后过滤。"
+            return "清晰扫描·拍照图片\n高精文字识别与切图"
         case .fullyScanned:
-            return "正文和水印都在图像里，整页 OCR 后过滤残留。"
+            return "红章公章·深色底纹\n先滤印净化后再识别"
         }
     }
 
     var systemImage: String {
         switch self {
         case .electronicTextWithTextWatermark:
-            return "doc.text"
+            return "bolt.fill"
         case .scannedTextWithTextWatermark:
-            return "doc.viewfinder"
+            return "doc.viewfinder.fill"
         case .fullyScanned:
-            return "scanner"
+            return "shield.checkerboard"
         }
     }
 
@@ -91,11 +91,11 @@ enum PDFProcessingScenario: String, CaseIterable, Identifiable, Codable, Sendabl
     var statusDescription: String {
         switch self {
         case .electronicTextWithTextWatermark:
-            return "读取 PDF 文本层，删除已确认的电子水印词，不重新 OCR。"
+            return "读取 PDF 文本层与高清插图，极速提取，不重新 OCR。"
         case .scannedTextWithTextWatermark:
-            return "保留原始扫描图像执行 Vision OCR，再按电子水印词过滤残留；必要时才手动开启遮罩。"
+            return "使用苹果原生 Vision OCR 识别扫描图像文字，并智能定位截取插图。"
         case .fullyScanned:
-            return "对整页图像执行红通道投影与色阶去印预处理后执行 Vision OCR，并截取插图按序混排。"
+            return "执行红通道公章消除与色阶洗白预处理后识别文字，并智能定位截取插图。"
         }
     }
 }
