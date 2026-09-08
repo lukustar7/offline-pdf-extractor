@@ -145,19 +145,19 @@ struct PDFExtractorCoreTests {
 
         suite.run("三大处理模式文案与系统映射一致性") {
             let m1 = PDFProcessingScenario.electronicTextWithTextWatermark
-            try require(m1.title == "可选文字 + 文字水印", "模式1大白话标题不正确")
+            try require(m1.title == "可选文字 + 文字水印", "模式1标题不正确")
             try require(m1.extractionMode == .textOnly, "模式1提取模式不正确")
             try require(m1.watermarkRemovalMode == .textLayerOnly, "模式1去水印模式映射不正确")
             try require(m1.systemImage == "text.badge.checkmark", "模式1图标不正确")
 
             let m2 = PDFProcessingScenario.scannedTextWithTextWatermark
-            try require(m2.title == "扫描正文 + 文字水印", "模式2大白话标题不正确")
+            try require(m2.title == "扫描正文 + 文字水印", "模式2标题不正确")
             try require(m2.extractionMode == .ocrOnly, "模式2提取模式不正确")
             try require(m2.watermarkRemovalMode == .textWatermarkOverScan, "模式2去水印模式映射不正确")
             try require(m2.systemImage == "doc.viewfinder", "模式2图标不正确")
 
             let m3 = PDFProcessingScenario.fullyScanned
-            try require(m3.title == "扫描正文 + 纸印水印", "模式3大白话标题不正确")
+            try require(m3.title == "扫描正文 + 纸印水印", "模式3标题不正确")
             try require(m3.extractionMode == .ocrOnly, "模式3提取模式不正确")
             try require(m3.watermarkRemovalMode == .scannedWatermarkOverScan, "模式3去水印模式映射不正确")
             try require(m3.systemImage == "sparkles.rectangle.stack", "模式3图标不正确")
@@ -184,6 +184,27 @@ struct PDFExtractorCoreTests {
             let output = ParagraphReconstructor.reconstruct(input)
             try require(output.contains("# 一级大标题\n\n正文首行文字正文次行文字。"), "标题未独立分段")
             try require(output.contains("1. 第一项列表\n\n2. 第二项列表"), "列表项未独立分段")
+        }
+
+        suite.run("英文断词连字符行末自动拼合修复 (De-hyphenation)") {
+            let input = "This is a compre-\nhensive study of text processing."
+            let output = ParagraphReconstructor.reconstruct(input)
+            let expected = "This is a comprehensive study of text processing."
+            try require(output == expected, "英文连字符拼合错误，实际为：\(output)")
+        }
+
+        suite.run("英文缩写词句末点号白名单保护不误断句") {
+            let input = "As shown in Fig.\n1, the experiment succeeded. Refer to Dr.\nSmith for details."
+            let output = ParagraphReconstructor.reconstruct(input)
+            let expected = "As shown in Fig. 1, the experiment succeeded. Refer to Dr. Smith for details."
+            try require(output == expected, "英文缩写断句错误，实际为：\(output)")
+        }
+
+        suite.run("中文段首全角空格与缩进精准识别新段落") {
+            let input = "第一行正文虽然没有句号\n　　第二行有全角空格缩进作为新段落开头但未完句，\n这是新段落的第二行。"
+            let output = ParagraphReconstructor.reconstruct(input)
+            let expected = "第一行正文虽然没有句号\n\n　　第二行有全角空格缩进作为新段落开头但未完句，这是新段落的第二行。"
+            try require(output == expected, "段首缩进分段错误，实际为：\(output)")
         }
     }
 
@@ -242,6 +263,22 @@ struct PDFExtractorCoreTests {
             )
 
             try require(elements.count == 2, "纯文本混排元素数应为 2")
+        }
+
+        suite.run("版面分析器将多行碎文本重构成规整 Word 自然段落元素") {
+            let textBlocks = [
+                DocumentLayoutAnalyzer.TextBlockInfo(text: "由于劣质 PDF 工具排版，", yPosition: 10),
+                DocumentLayoutAnalyzer.TextBlockInfo(text: "本该属于同一句话的内容被硬回车打断，", yPosition: 30),
+                DocumentLayoutAnalyzer.TextBlockInfo(text: "直到这里才真正结束。", yPosition: 50)
+            ]
+            let elements = DocumentLayoutAnalyzer.interweave(textBlocks: textBlocks, images: [])
+            try require(elements.count == 1, "未完句的3行切片文本应重组为 1 个完整段落元素，实际产生了 \(elements.count) 个")
+            if case .paragraph(let text) = elements[0] {
+                let expected = "由于劣质 PDF 工具排版，本该属于同一句话的内容被硬回车打断，直到这里才真正结束。"
+                try require(text == expected, "重构后的自然段落内容不匹配：\(text)")
+            } else {
+                throw AssertionFailure(description: "首个元素应为段落")
+            }
         }
     }
 

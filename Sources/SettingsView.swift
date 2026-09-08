@@ -80,7 +80,7 @@ struct SettingsView: View {
                     Text("Microsoft Word 文档 (.docx)")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.primary)
-                    Text("纯本地生成标准 Office Open XML 文件，内嵌高保真插图与排版样式，双击开箱即用。")
+                    Text("本地生成标准 Office Open XML 格式，内嵌插图与段落排版，支持使用 Word 直接打开。")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -178,12 +178,12 @@ struct SettingsView: View {
                         .lineSpacing(3)
                 }
             }
-            
             settingRow(label: "应用版本:") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("PDF 文字提取 v1.7.0")
+                    let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.0"
+                    Text("PDF 文字提取 v\(appVersion)")
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    Text("纯血 Apple Silicon (M系列芯片) 深度调优，三大处理模式横排自选，支持 Word (.docx) 单文件无损直出。")
+                    Text("适用于 Apple Silicon (M 系列芯片)，支持三种处理模式与 Word (.docx) 图文导出功能。")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }

@@ -29,7 +29,7 @@ STAGING_MACOS="${STAGING_CONTENTS}/MacOS"
 STAGING_RESOURCES="${STAGING_CONTENTS}/Resources"
 PREVIOUS_APP=".build/previous-${APP_NAME}.app"
 
-echo "=== 构建 macOS PDF 文字提取工具 v1.7.0 (纯血 Apple Silicon ARM64) ==="
+echo "=== 构建 macOS PDF 文字提取工具 v0.4.0 (Apple Silicon ARM64) ==="
 
 echo "1/6 校验配置并运行核心测试..."
 plutil -lint Info.plist >/dev/null
@@ -72,10 +72,10 @@ echo "5/6 执行本地签名与架构完整性校验..."
 codesign --force --deep --sign - "${STAGING_APP}"
 codesign --verify --deep --strict "${STAGING_APP}"
 
-# 严格校验二进制架构为 Apple Silicon ARM64
+# 校验二进制架构为 Apple Silicon ARM64
 BINARY_INFO=$(file "${STAGING_MACOS}/${EXECUTABLE_NAME}")
 if ! echo "${BINARY_INFO}" | grep -q "arm64"; then
-    echo "错误：二进制架构验证失败，非纯血 ARM64：${BINARY_INFO}" >&2
+    echo "错误：二进制架构验证失败，非 ARM64 架构：${BINARY_INFO}" >&2
     exit 1
 fi
 
@@ -103,10 +103,10 @@ else
 fi
 
 if [[ "${1:-}" == "--clean" ]]; then
-    echo "正在执行构建后磁盘瘦身..."
+    echo "正在清理构建缓存..."
     rm -rf "${SCRATCH_DIR}" "${STAGING_ROOT}"
-    echo "构建中间碎片已清理。"
+    echo "构建临时缓存已清理。"
 fi
 
 APP_SIZE=$(du -sh "${APP_DIR}" | awk '{print $1}')
-echo "=== 构建完成：${APP_DIR}（${APP_SIZE}，纯血 Apple Silicon ARM64，最低 macOS ${DEPLOYMENT_TARGET}） ==="
+echo "=== 构建完成：${APP_DIR}（${APP_SIZE}，Apple Silicon ARM64，最低 macOS ${DEPLOYMENT_TARGET}） ==="

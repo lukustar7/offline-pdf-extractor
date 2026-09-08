@@ -129,38 +129,65 @@ public enum DocumentLayoutAnalyzer {
         )
     }
 
-    /// 将文本段落与插图按在页面自上而下的纵向 Y 坐标统一排序，形成自然阅读流
+    /// 将文本段落与插图按在页面自上而下的纵向 Y 坐标统一排序，形成自然阅读流。
+    /// 连续文本行会自动通过 ParagraphReconstructor 智能拼接为真正的自然段落，彻底消除碎行。
     public static func interweave(
         textBlocks: [TextBlockInfo],
         images: [ExtractedImage]
     ) -> [DocumentElement] {
-        struct SortableItem {
-            let yPosition: CGFloat
-            let element: DocumentElement
+        enum RawItem {
+            case text(TextBlockInfo)
+            case image(ExtractedImage)
+
+            var yPosition: CGFloat {
+                switch self {
+                case .text(let block): return block.yPosition
+                case .image(let img): return img.bounds.midY
+                }
+            }
         }
 
-        var sortableItems: [SortableItem] = []
-
+        var rawItems: [RawItem] = []
         for block in textBlocks {
             let cleaned = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleaned.isEmpty else { continue }
-            sortableItems.append(SortableItem(
-                yPosition: block.yPosition,
-                element: .paragraph(cleaned)
-            ))
+            rawItems.append(.text(block))
         }
 
         for img in images {
-            sortableItems.append(SortableItem(
-                yPosition: img.bounds.midY,
-                element: .image(img)
-            ))
+            rawItems.append(.image(img))
         }
 
         // 按垂直高度升序（从页面顶部到页面底部）
-        sortableItems.sort { $0.yPosition < $1.yPosition }
+        rawItems.sort { $0.yPosition < $1.yPosition }
 
-        return sortableItems.map { $0.element }
+        var finalElements: [DocumentElement] = []
+        var contiguousTextLines: [String] = []
+
+        func flushTextBuffer() {
+            guard !contiguousTextLines.isEmpty else { return }
+            let paragraphs = ParagraphReconstructor.reconstructParagraphs(contiguousTextLines)
+            for para in paragraphs {
+                let trimmed = para.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    finalElements.append(.paragraph(trimmed))
+                }
+            }
+            contiguousTextLines.removeAll(keepingCapacity: true)
+        }
+
+        for item in rawItems {
+            switch item {
+            case .text(let block):
+                contiguousTextLines.append(block.text)
+            case .image(let img):
+                flushTextBuffer()
+                finalElements.append(.image(img))
+            }
+        }
+        flushTextBuffer()
+
+        return finalElements
     }
 
     // MARK: - 内部算法：文字遮蔽与插图外接矩形探测

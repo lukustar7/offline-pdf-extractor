@@ -56,8 +56,8 @@ struct WelcomeView: View {
                 FeatureRow(
                     icon: "doc.richtext.fill",
                     tint: .indigo,
-                    title: "Word (.docx) 图文单文件直出",
-                    description: "自动定位截取扫描件与电子版插图，按自然阅读顺序无损内嵌在单个 Word 文档中，开箱即用。"
+                    title: "Word (.docx) 图文导出",
+                    description: "自动定位截取插图，按阅读顺序内嵌于单个 Word 文档中，支持直接编辑。"
                 )
                 
                 FeatureRow(

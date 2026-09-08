@@ -209,21 +209,16 @@ actor PDFExtractionWorker {
                     watermarks: request.watermarkFilters
                 )
             }
-            let formattedText = ParagraphReconstructor.reconstruct(content.fullText)
-            let finalContent = ExtractedPageContent(
-                pageNumber: pageNumber,
-                fullText: formattedText,
-                elements: content.elements,
-                images: content.images
-            )
-            return PageExtractionOutput(content: finalContent, warning: nil)
+            return PageExtractionOutput(content: content, warning: nil)
         } else {
             let rawText = extractTextLayer(selections: selections, request: request)
-            let formattedText = ParagraphReconstructor.reconstruct(rawText)
+            let paragraphs = ParagraphReconstructor.reconstructParagraphs(rawText.components(separatedBy: .newlines))
+            let formattedText = paragraphs.joined(separator: "\n\n")
+            let elements = paragraphs.map { DocumentElement.paragraph($0) }
             let content = ExtractedPageContent(
                 pageNumber: pageNumber,
                 fullText: formattedText,
-                elements: [.paragraph(formattedText)],
+                elements: elements,
                 images: []
             )
             return PageExtractionOutput(content: content, warning: nil)
@@ -305,7 +300,7 @@ actor PDFExtractionWorker {
             }
         }
 
-        // 版面自适应分析：检测插图并与文字按纵向阅读顺序自然混排
+        // 版面自适应分析：检测插图并与文字按纵向阅读顺序自然混排（内部已包含智能段落重组）
         let content = autoreleasepool {
             DocumentLayoutAnalyzer.analyzePage(
                 pageNumber: pageNumber,
@@ -315,18 +310,10 @@ actor PDFExtractionWorker {
             )
         }
 
-        let formattedText = ParagraphReconstructor.reconstruct(content.fullText)
-        let finalContent = ExtractedPageContent(
-            pageNumber: pageNumber,
-            fullText: formattedText,
-            elements: content.elements,
-            images: content.images
-        )
-
         let warning = ocrOutput.warning.map {
             "第 \(pageNumber) 页 OCR 失败：\($0)"
         }
-        return PageExtractionOutput(content: finalContent, warning: warning)
+        return PageExtractionOutput(content: content, warning: warning)
     }
 
     /// 文本层只删除整行完全匹配的水印，避免误删正文中恰好包含同一词语的句子。

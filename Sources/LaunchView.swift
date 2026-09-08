@@ -72,8 +72,8 @@ struct LaunchView: View {
                 LaunchFeatureCard(
                     icon: "doc.richtext.fill",
                     tint: .indigo,
-                    title: "Word (.docx) 直出",
-                    subtitle: "单文件无损内嵌插图与排版，开箱即用"
+                    title: "Word (.docx) 导出",
+                    subtitle: "单个文档内嵌插图与排版样式"
                 )
             }
             .frame(maxWidth: 720)

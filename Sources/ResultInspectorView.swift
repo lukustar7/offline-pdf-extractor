@@ -60,7 +60,7 @@ struct ResultInspectorView: View {
 
             Divider().opacity(0.4)
 
-            // 5. 底部悬浮状态与大气质感操作坞 (Floating Action Dock)
+            // 5. 底部操作栏 (Floating Action Dock)
             studioBottomBar
         }
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.5))
@@ -424,7 +424,7 @@ struct ResultInspectorView: View {
         }
     }
 
-    // MARK: - 4. 底部状态与操作栏 (大气标准尺寸 36px)
+    // MARK: - 4. 底部状态与操作栏 (标准尺寸 36px)
     private var studioBottomBar: some View {
         HStack(spacing: Theme.Spacing.lg) {
             // 左侧状态统计
@@ -461,7 +461,7 @@ struct ResultInspectorView: View {
             .disabled(engine.extractedPages.isEmpty)
             .help("拷贝已提取的所有段落纯文本")
 
-            // 主提取动作按钮 (高度 36px 大气胶囊)
+            // 主提取动作按钮 (高度 36px)
             if engine.isProcessing {
                 Button(action: { engine.cancelPDFExtraction() }) {
                     Label("停止提取", systemImage: "stop.fill")
