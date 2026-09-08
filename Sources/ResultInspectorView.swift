@@ -1,28 +1,24 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - 沉浸式文本工作室 (Text Studio - 遵循 Apple 生产力工作台规范)
+// MARK: - 沉浸式图文工作室 (Document Studio - Apple 原生生产力设计规范)
 
 @MainActor
-private final class TextStudioViewState: ObservableObject {
+private final class DocumentStudioState: ObservableObject {
     @Published var showOptionsDrawer = false
     @Published var newWatermarkInput = ""
 }
 
 struct ResultInspectorView: View {
     @ObservedObject var engine: PDFExtractorEngine
-    @ObservedObject var aiEngine: AIProcessingEngine
     @Binding var currentPage: Int
     var onStartExtraction: () -> Void
 
-    // 视图范围：单页对照 vs 全篇大纲
+    // 视图范围：当前页对照 vs 全篇大纲
     @AppStorage("studioViewScope") private var viewScope: StudioViewScope = .singlePage
-    // 检查器分栏模式：提取原文 vs AI 净化
-    @AppStorage("resultInspectorPane") private var selectedPane: ResultPane = .raw
-    @AppStorage("aiPreviewMode") private var aiPreviewMode: AIPreviewMode = .formatted
 
-    // 是否展开高级去水印与过滤设置抽屉与手敲词状态
-    @StateObject private var studioState = TextStudioViewState()
+    // 内部状态对象
+    @StateObject private var studioState = DocumentStudioState()
 
     // 提取配置持久化项
     @AppStorage("processingScenario") private var processingScenario: PDFProcessingScenario = .electronicTextWithTextWatermark
@@ -40,184 +36,158 @@ struct ResultInspectorView: View {
         var id: String { rawValue }
     }
 
-    enum ResultPane: String, CaseIterable, Identifiable {
-        case raw = "提取原文"
-        case ai = "AI 净化"
-
-        var id: String { rawValue }
-    }
-
-    enum AIPreviewMode: String, CaseIterable, Identifiable {
-        case formatted = "排版渲染"
-        case markdown = "源码"
-
-        var id: String { rawValue }
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            // 1. 顶部工作台主工具栏 (范围切换 + 模式切换 + 复制导出)
+            // 1. 顶部工作台工具栏 (大气标准尺寸)
             studioHeader
 
             Divider()
 
-            // 2. 高级过滤与参数折叠面板 (按需展开，绝不常驻挤压文本阅读高度)
+            // 2. 高级过滤与提取参数折叠抽屉
             if studioState.showOptionsDrawer {
                 optionsDrawer
                     .transition(.move(edge: .top).combined(with: .opacity))
                 Divider()
             }
 
-            // 3. 核心沉浸式文本展示区 (拥有全高度舒展空间)
-            ZStack {
-                switch selectedPane {
-                case .raw:
-                    rawTextStudioView
-                case .ai:
-                    aiTextStudioView
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 3. 核心图文混排内容展示区
+            documentContentArea
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
-            // 4. 底部状态与主操作动作栏
+            // 4. 底部状态与大尺寸操作栏
             studioBottomBar
         }
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
     }
 
-    // MARK: - 1. 工作台主工具栏
+    // MARK: - 1. 工作台主工具栏 (大气从容)
     private var studioHeader: some View {
-        HStack(spacing: Theme.Spacing.sm) {
-            // 范围选择：当前页 vs 全篇大纲
+        HStack(spacing: Theme.Spacing.md) {
+            // 范围切换：当前页 vs 全篇大纲 (标准 regular 尺寸)
             Picker("", selection: $viewScope) {
                 ForEach(StudioViewScope.allCases) { scope in
                     Text(scope.rawValue).tag(scope)
                 }
             }
             .pickerStyle(.segmented)
-            .controlSize(.small)
-            .frame(width: 150)
-
-            // 内容模式选择：原文 vs AI 净化
-            Picker("", selection: $selectedPane) {
-                ForEach(ResultPane.allCases) { pane in
-                    Text(pane.rawValue).tag(pane)
-                }
-            }
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .frame(width: 140)
+            .controlSize(.regular)
+            .frame(width: 190)
 
             Spacer()
 
-            // 过滤设置展开按钮
+            // 参数设置展开按钮
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(.easeInOut(duration: 0.2)) {
                     studioState.showOptionsDrawer.toggle()
                 }
             } label: {
-                Image(systemName: studioState.showOptionsDrawer ? "slider.horizontal.3.fill" : "slider.horizontal.3")
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help(studioState.showOptionsDrawer ? "收起过滤与场景参数" : "展开去水印与场景设置")
-
-            // 一键复制
-            Button(action: copyActiveText) {
                 Label(
-                    engine.isCopied ? "已复制" : "复制",
-                    systemImage: engine.isCopied ? "checkmark" : "doc.on.doc"
+                    studioState.showOptionsDrawer ? "收起参数" : "去印与过滤",
+                    systemImage: studioState.showOptionsDrawer ? "slider.horizontal.3.fill" : "slider.horizontal.3"
                 )
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(currentActiveText.isEmpty)
-            .help(viewScope == .singlePage ? "复制当前页文本到剪贴板" : "复制全篇文本到剪贴板")
+            .controlSize(.regular)
+            .help(studioState.showOptionsDrawer ? "收起去印参数与页码设置" : "展开去印参数与页码设置")
 
-            // 导出菜单
+            // 核心主导出按钮：直接导出包含所有内嵌图片的 Word 文档 (.docx)
+            Button(action: exportDocxAction) {
+                Label("导出 Word (.docx)", systemImage: "arrow.down.doc.fill")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .disabled(engine.extractedPages.isEmpty)
+            .help("将提取的文字与完整截取插图一并导出为 Word 文档 (.docx)")
+
+            // 更多操作下拉菜单
             Menu {
-                Button("导出当前页原文 (TXT)") { exportSinglePageRawText() }
-                Button("导出全篇原文 (TXT)") { exportRawText() }
+                Button("拷贝全部纯文本") {
+                    copyActiveText()
+                }
                 Divider()
-                Button("导出全篇 AI 结果 (Markdown)") { exportAIText(asMarkdown: true) }
-                Button("导出全篇 AI 结果 (TXT)") { exportAIText(asMarkdown: false) }
+                Button("导出 Markdown 压缩包 (.zip 含插图)") {
+                    exportMarkdownZipAction()
+                }
+                Button("拷贝 Markdown 格式文本") {
+                    copyMarkdownText()
+                }
             } label: {
-                Label("导出...", systemImage: "square.and.arrow.up")
-                    .font(.system(size: 11, weight: .medium))
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 14))
             }
             .menuStyle(.borderedButton)
-            .controlSize(.small)
-            .disabled(engine.extractedPagesText.isEmpty)
-            .help("导出提取与净化的文本成果")
+            .controlSize(.regular)
+            .disabled(engine.extractedPages.isEmpty)
+            .help("更多导出与复制操作")
         }
         .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.xs + 2)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
+        .padding(.vertical, Theme.Spacing.sm)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
     }
 
-    // MARK: - 2. 折叠参数抽屉 (按需调出)
+    // MARK: - 2. 折叠参数抽屉
     private var optionsDrawer: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            // 场景提示与覆盖选择
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            // 场景自动匹配与手动覆盖
             HStack {
                 if !engine.detectedScenarioTitle.isEmpty {
                     Label(engine.detectedScenarioTitle, systemImage: "sparkles")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.accentColor)
                 }
 
                 Spacer()
 
-                Picker("场景模式:", selection: $processingScenario) {
+                Picker("处理模式:", selection: $processingScenario) {
                     ForEach(PDFProcessingScenario.allCases) { sc in
                         Text(sc.title).tag(sc)
                     }
                 }
                 .pickerStyle(.menu)
-                .controlSize(.small)
-                .frame(width: 190)
+                .controlSize(.regular)
+                .frame(width: 210)
             }
 
-            // 滤镜开关
+            // 扫描件滤镜开关
             if processingScenario != .electronicTextWithTextWatermark {
-                HStack(spacing: Theme.Spacing.md) {
+                HStack(spacing: Theme.Spacing.lg) {
                     Toggle("色阶拉伸洗白浅灰水印", isOn: $removeLightWatermarks)
                         .toggleStyle(.checkbox)
-                        .font(.system(size: 11))
+                        .font(.system(size: 12))
 
                     Toggle("红通道消除彩色公章", isOn: $removeColorStamps)
                         .toggleStyle(.checkbox)
-                        .font(.system(size: 11))
+                        .font(.system(size: 12))
                 }
             }
 
             // 水印过滤词管理
             watermarkSection
 
-            // 页码范围
-            HStack(spacing: Theme.Spacing.sm) {
+            // 提取范围
+            HStack(spacing: Theme.Spacing.md) {
                 Picker("提取范围:", selection: $pageRangeMode) {
-                    Text("全部页 (\(engine.pdfTotalPages))").tag(0)
-                    Text("当前页 (第 \(currentPage) 页)").tag(1)
-                    Text("指定页码").tag(2)
+                    Text("全部页面 (共 \(engine.pdfTotalPages) 页)").tag(0)
+                    Text("仅当前页 (第 \(currentPage) 页)").tag(1)
+                    Text("指定页码范围").tag(2)
                 }
                 .pickerStyle(.menu)
-                .controlSize(.small)
+                .controlSize(.regular)
 
                 if pageRangeMode == 2 {
                     TextField("如 1-3, 5", text: $pageRangeString)
                         .textFieldStyle(.roundedBorder)
-                        .controlSize(.small)
-                        .frame(width: 90)
+                        .controlSize(.regular)
+                        .frame(width: 100)
                 }
             }
-            .font(.system(size: 11))
+            .font(.system(size: 12))
         }
-        .padding(Theme.Spacing.md)
+        .padding(Theme.Spacing.lg)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
 
@@ -225,252 +195,198 @@ struct ResultInspectorView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
             HStack {
                 Text("水印过滤词:")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
-                TextField("添加自定义过滤词...", text: $studioState.newWatermarkInput, onCommit: addCustomWatermark)
+                TextField("输入要滤除的水印词...", text: $studioState.newWatermarkInput, onCommit: addCustomWatermark)
                     .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                    .frame(maxWidth: 180)
+                    .controlSize(.regular)
+                    .frame(maxWidth: 200)
 
                 Button(action: addCustomWatermark) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 10, weight: .semibold))
+                    Label("添加", systemImage: "plus")
+                        .font(.system(size: 12))
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .controlSize(.regular)
                 .disabled(studioState.newWatermarkInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            // 候选词与自定义词标签
+            // 候选词与自定义词标签流
             if !engine.watermarkCandidates.isEmpty || !customWatermarksList.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         ForEach($engine.watermarkCandidates) { $candidate in
                             Button {
                                 candidate.isSelected.toggle()
                             } label: {
-                                HStack(spacing: 3) {
+                                HStack(spacing: 4) {
                                     if candidate.isSelected {
                                         Image(systemName: "checkmark")
-                                            .font(.system(size: 8, weight: .bold))
+                                            .font(.system(size: 9, weight: .bold))
                                     }
                                     Text(candidate.text)
-                                        .font(.system(size: 11))
+                                        .font(.system(size: 12))
                                 }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
                                 .background(candidate.isSelected ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
                                 .foregroundStyle(candidate.isSelected ? Color.white : Color.primary)
                                 .clipShape(Capsule())
-                                .subtleBorder(cornerRadius: 12, isSelected: candidate.isSelected)
+                                .subtleBorder(cornerRadius: 14, isSelected: candidate.isSelected)
                             }
                             .buttonStyle(.plain)
                         }
 
                         ForEach(customWatermarksList, id: \.self) { word in
-                            HStack(spacing: 3) {
+                            HStack(spacing: 4) {
                                 Text(word)
-                                    .font(.system(size: 11))
+                                    .font(.system(size: 12))
                                 Button {
                                     removeCustomWatermark(word)
                                 } label: {
                                     Image(systemName: "xmark")
-                                        .font(.system(size: 8, weight: .bold))
+                                        .font(.system(size: 9, weight: .bold))
                                 }
                                 .buttonStyle(.plain)
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
                             .background(Color.accentColor.opacity(0.15))
                             .foregroundStyle(Color.accentColor)
                             .clipShape(Capsule())
                         }
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 3)
                 }
             }
         }
     }
 
-    // MARK: - 3. 核心文本展示区
-    private var rawTextStudioView: some View {
+    // MARK: - 3. 核心图文混排展示区 (开阔阅读流)
+    private var documentContentArea: some View {
         ZStack {
-            if engine.isProcessing && engine.extractedPagesText.isEmpty {
-                VStack(spacing: Theme.Spacing.md) {
+            if engine.isProcessing && engine.extractedPages.isEmpty {
+                VStack(spacing: Theme.Spacing.lg) {
                     ProgressView()
-                        .scaleEffect(1.1)
-                    Text("正在提取第 \(currentPage) 页...")
-                        .font(.system(size: 13, weight: .medium))
+                        .scaleEffect(1.2)
+                    Text("正在提取图文内容...")
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
-            } else if engine.extractedPagesText.isEmpty {
-                EmptyResultState(
-                    systemImage: "doc.text.magnifyingglass",
-                    title: "就绪，等待提取",
-                    subtitle: "点击底部“提取文字”或按 ⌘R 开始识别。内置段落重构引擎将自动合并硬换行。"
+            } else if engine.extractedPages.isEmpty {
+                EmptyStateView(
+                    systemImage: "doc.richtext",
+                    title: "等待提取图文",
+                    subtitle: "点击底部“开始提取”或按 ⌘R。系统将自动重构自然段落，并精准截取文档中的照片、图表与公式，按顺序穿插呈现。"
                 )
             } else {
-                let displayedText = (viewScope == .singlePage)
-                    ? (engine.extractedPagesText[currentPage] ?? "第 \(currentPage) 页暂未提取或文本为空。")
-                    : engine.fullExtractedText
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                        if viewScope == .singlePage {
+                            // 单页对照视图
+                            if let pageContent = engine.extractedPages[currentPage] {
+                                PageContentView(page: pageContent)
+                            } else {
+                                Text("第 \(currentPage) 页尚未提取。点击下方“开始提取”即可识别。")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                                    .padding(Theme.Spacing.xl)
+                            }
+                        } else {
+                            // 全篇大纲视图
+                            let sortedPages = engine.extractedPages.keys.sorted().compactMap { engine.extractedPages[$0] }
+                            ForEach(sortedPages, id: \.pageNumber) { pageContent in
+                                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                                    HStack {
+                                        Text("第 \(pageContent.pageNumber) 页")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(.secondary)
+                                        Rectangle()
+                                            .fill(Color(nsColor: .separatorColor).opacity(0.4))
+                                            .frame(height: 1)
+                                    }
+                                    .padding(.top, Theme.Spacing.sm)
 
-                ReadOnlyTextView(text: displayedText)
-            }
-        }
-    }
-
-    private var aiTextStudioView: some View {
-        ZStack {
-            if aiEngine.isAIProcessing && (aiEngine.aiPagesText[currentPage] ?? "").isEmpty {
-                VStack(spacing: Theme.Spacing.md) {
-                    ProgressView()
-                        .scaleEffect(1.1)
-                    Text(aiEngine.aiProgressStatus)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-            } else if aiEngine.aiPagesText.isEmpty,
-                      aiEngine.aiProgressStatus.hasPrefix("错误") {
-                VStack(spacing: Theme.Spacing.md) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.red)
-                    Text("AI 净化遇到问题")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(aiEngine.aiProgressStatus)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, Theme.Spacing.lg)
-
-                    Button("打开设置检查端点 (⌘,)") {
-                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            } else if aiEngine.aiPagesText.isEmpty {
-                EmptyResultState(
-                    systemImage: "sparkles",
-                    title: "等待 AI 净化",
-                    subtitle: "提取完成后，点击下方“AI 净化”调用本地大模型校对错别字与段落排版。"
-                )
-            } else {
-                let displayedAIText = (viewScope == .singlePage)
-                    ? (aiEngine.aiPagesText[currentPage] ?? "第 \(currentPage) 页暂无 AI 净化内容。")
-                    : joinedPages(aiEngine.aiPagesText)
-
-                VStack(spacing: 0) {
-                    HStack {
-                        Spacer()
-                        Picker("", selection: $aiPreviewMode) {
-                            ForEach(AIPreviewMode.allCases) { mode in
-                                Text(mode.rawValue).tag(mode)
+                                    PageContentView(page: pageContent)
+                                }
                             }
                         }
-                        .pickerStyle(.segmented)
-                        .controlSize(.small)
-                        .frame(width: 140)
                     }
-                    .padding(.horizontal, Theme.Spacing.sm)
-                    .padding(.vertical, 4)
-                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
-
-                    if aiPreviewMode == .formatted {
-                        ScrollView {
-                            Text(LocalizedStringKey(displayedAIText))
-                                .font(.system(.body, design: .default))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(Theme.Spacing.md)
-                        }
-                    } else {
-                        ReadOnlyTextView(text: displayedAIText)
-                    }
+                    .padding(Theme.Spacing.xl)
                 }
             }
         }
     }
 
-    // MARK: - 4. 底部状态与操作栏
+    // MARK: - 4. 底部状态与操作栏 (大气标准尺寸 36px)
     private var studioBottomBar: some View {
-        HStack(spacing: Theme.Spacing.md) {
-            // 左侧字数统计与状态
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
+        HStack(spacing: Theme.Spacing.lg) {
+            // 左侧状态统计
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
                     Circle()
                         .fill(statusIndicatorColor)
-                        .frame(width: 6, height: 6)
+                        .frame(width: 7, height: 7)
                     Text(statusTextDescription)
-                        .font(.caption2)
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
 
-                if !currentActiveText.isEmpty {
-                    Text(viewScope == .singlePage ? "当前页: \(currentActiveText.count) 字" : "全篇累计: \(engine.totalExtractedWordCount) 字")
-                        .font(.caption2)
+                if !engine.extractedPages.isEmpty {
+                    Text("已提取 \(engine.extractedPages.count) 页 · 共 \(engine.totalExtractedWordCount) 字 · \(engine.totalExtractedImagesCount) 张插图")
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
             }
 
             Spacer()
 
-            // 主提取按钮
+            // 快捷拷贝文字
+            Button(action: copyActiveText) {
+                Label(
+                    engine.isCopied ? "已拷贝文本" : "拷贝文本",
+                    systemImage: engine.isCopied ? "checkmark" : "doc.on.doc"
+                )
+                .font(.system(size: 13, weight: .medium))
+                .padding(.horizontal, Theme.Spacing.xs)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(engine.extractedPages.isEmpty)
+            .help("拷贝已提取的所有段落纯文本")
+
+            // 主提取动作按钮 (高度 36px 大气胶囊)
             if engine.isProcessing {
                 Button(action: { engine.cancelPDFExtraction() }) {
                     Label("停止提取", systemImage: "stop.fill")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, Theme.Spacing.sm)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
-                .controlSize(.regular)
+                .controlSize(.large)
             } else {
                 Button(action: onStartExtraction) {
-                    Label("提取文字", systemImage: "play.fill")
-                        .font(.system(size: 12, weight: .semibold))
+                    Label("开始提取全文与插图", systemImage: "play.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, Theme.Spacing.sm)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .disabled(
-                    engine.pdfFileName.isEmpty
-                        || engine.isAnalyzingWatermarks
-                        || aiEngine.isAIProcessing
-                )
+                .controlSize(.large)
+                .disabled(engine.pdfFileName.isEmpty || engine.isAnalyzingWatermarks)
                 .keyboardShortcut("r", modifiers: .command)
-                .help("开始执行文字提取 (⌘R)")
-            }
-
-            // AI 净化按钮
-            if aiEngine.isAIProcessing {
-                Button(action: { aiEngine.cancelAIProcessing() }) {
-                    Label("停止净化", systemImage: "stop.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-                .controlSize(.regular)
-            } else {
-                Button(action: startAIPurificationAction) {
-                    Label("AI 净化", systemImage: "sparkles")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .disabled(
-                    engine.extractedPagesText.isEmpty
-                        || engine.isProcessing
-                )
-                .help("让本地 AI 模型校对错字并润色")
+                .help("开始执行全文与插图提取 (⌘R)")
             }
         }
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.sm)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
+        .padding(.horizontal, Theme.Spacing.lg)
+        .padding(.vertical, Theme.Spacing.md)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
     }
 
-    // MARK: - 辅助逻辑
+    // MARK: - 辅助与导出逻辑
     private var customWatermarksList: [String] {
         customWatermarks
             .components(separatedBy: ",")
@@ -496,36 +412,24 @@ struct ResultInspectorView: View {
     }
 
     private var statusIndicatorColor: Color {
-        if engine.isProcessing || aiEngine.isAIProcessing {
-            return .orange
-        }
-        if engine.extractedPagesText[currentPage] != nil {
-            return .green
-        }
+        if engine.isProcessing { return .orange }
+        if !engine.extractedPages.isEmpty { return .green }
         return .secondary
     }
 
     private var statusTextDescription: String {
-        if engine.isProcessing { return "正在提取文字..." }
-        if aiEngine.isAIProcessing { return "AI 正在润色..." }
-        if engine.extractedPagesText[currentPage] != nil { return "当前页已提取" }
+        if engine.isProcessing { return "正在提取图文..." }
+        if !engine.extractedPages.isEmpty { return "提取完毕" }
         return "就绪"
     }
 
-    private var currentActiveText: String {
-        if selectedPane == .raw {
-            return (viewScope == .singlePage)
-                ? (engine.extractedPagesText[currentPage] ?? "")
-                : engine.fullExtractedText
-        } else {
-            return (viewScope == .singlePage)
-                ? (aiEngine.aiPagesText[currentPage] ?? "")
-                : joinedPages(aiEngine.aiPagesText)
-        }
-    }
-
     private func copyActiveText() {
-        let textToCopy = currentActiveText
+        let textToCopy: String
+        if viewScope == .singlePage {
+            textToCopy = engine.extractedPages[currentPage]?.fullText ?? ""
+        } else {
+            textToCopy = engine.fullExtractedText
+        }
         guard !textToCopy.isEmpty else { return }
 
         let pasteboard = NSPasteboard.general
@@ -542,99 +446,175 @@ struct ResultInspectorView: View {
         }
     }
 
-    private func startAIPurificationAction() {
-        selectedPane = .ai
-        let targetPages = engine.extractedPagesText.keys.sorted()
-        let showChanges = UserDefaults.standard.bool(forKey: "aiShowChanges")
-        let passWatermarks = UserDefaults.standard.bool(forKey: "aiPassWatermarks")
-        let activeWatermarks = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
-        let storedPrompt = AIPromptBuilder.storedSystemPrompt()
-        let finalPrompt = AIPromptBuilder.composedPrompt(
-            basePrompt: storedPrompt,
-            showChanges: showChanges,
-            passWatermarks: passWatermarks,
-            activeWatermarks: activeWatermarks,
-            customWatermarks: customWatermarks
-        )
-
-        aiEngine.processTextWithAI(
-            extractedPages: engine.extractedPagesText,
-            targetPages: targetPages,
-            systemPrompt: finalPrompt
-        )
+    private func copyMarkdownText() {
+        let (md, _) = engine.buildMarkdown()
+        guard !md.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(md, forType: .string)
     }
 
-    private func exportSinglePageRawText() {
-        guard let text = engine.extractedPagesText[currentPage] else { return }
+    /// 导出为 Word 文档 (.docx)
+    private func exportDocxAction() {
+        guard !engine.extractedPages.isEmpty else { return }
         let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [.plainText]
+        let docxType = UTType(filenameExtension: "docx") ?? .data
+        savePanel.allowedContentTypes = [docxType]
         let baseName = (engine.pdfFileName as NSString).deletingPathExtension
-        savePanel.nameFieldStringValue = "\(baseName)_第\(currentPage)页.txt"
+        savePanel.nameFieldStringValue = "\(baseName).docx"
 
         savePanel.begin { response in
             if response == .OK, let url = savePanel.url {
                 do {
-                    try text.write(to: url, atomically: true, encoding: .utf8)
+                    let docxData = try engine.buildDocxData()
+                    try docxData.write(to: url)
                 } catch {
-                    engine.errorMessage = "导出失败：\(error.localizedDescription)"
+                    engine.errorMessage = "导出 Word 文档失败：\(error.localizedDescription)"
                 }
             }
         }
     }
 
-    private func exportRawText() {
+    /// 导出为 Markdown 压缩包 (.zip)
+    private func exportMarkdownZipAction() {
+        guard !engine.extractedPages.isEmpty else { return }
         let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [.plainText]
-        savePanel.nameFieldStringValue = (engine.pdfFileName as NSString).deletingPathExtension + ".txt"
-
-        savePanel.begin { response in
-            if response == .OK, let url = savePanel.url {
-                do {
-                    try joinedPages(engine.extractedPagesText).write(to: url, atomically: true, encoding: .utf8)
-                } catch {
-                    engine.errorMessage = "导出原文失败：\(error.localizedDescription)"
-                }
-            }
-        }
-    }
-
-    private func exportAIText(asMarkdown: Bool) {
-        let savePanel = NSSavePanel()
-        let markdownType = UTType(filenameExtension: "md") ?? .plainText
-        savePanel.allowedContentTypes = asMarkdown ? [markdownType] : [.plainText]
+        let zipType = UTType(filenameExtension: "zip") ?? .data
+        savePanel.allowedContentTypes = [zipType]
         let baseName = (engine.pdfFileName as NSString).deletingPathExtension
-        savePanel.nameFieldStringValue = "\(baseName)_AI净化" + (asMarkdown ? ".md" : ".txt")
+        savePanel.nameFieldStringValue = "\(baseName)_Markdown.zip"
 
         savePanel.begin { response in
             if response == .OK, let url = savePanel.url {
-                let content = asMarkdown ? markdownPages(aiEngine.aiPagesText) : joinedPages(aiEngine.aiPagesText)
                 do {
-                    try content.write(to: url, atomically: true, encoding: .utf8)
+                    let (markdown, images) = engine.buildMarkdown()
+                    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+                    // 写出 markdown 文件
+                    let mdURL = tempDir.appendingPathComponent("\(baseName).md")
+                    try markdown.write(to: mdURL, atomically: true, encoding: .utf8)
+
+                    // 写出 images 文件夹
+                    if !images.isEmpty {
+                        let imgDir = tempDir.appendingPathComponent("images")
+                        try FileManager.default.createDirectory(at: imgDir, withIntermediateDirectories: true)
+                        for item in images {
+                            let fileURL = imgDir.appendingPathComponent(item.filename)
+                            if let tiffData = item.image.tiffRepresentation,
+                               let bitmap = NSBitmapImageRep(data: tiffData),
+                               let pngData = bitmap.representation(using: .png, properties: [:]) {
+                                try pngData.write(to: fileURL)
+                            }
+                        }
+                    }
+
+                    // 调用 zip 打包
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                    process.currentDirectoryURL = tempDir
+                    process.arguments = ["-q", "-r", url.path, "."]
+                    try process.run()
+                    process.waitUntilExit()
                 } catch {
-                    engine.errorMessage = "导出 AI 结果失败：\(error.localizedDescription)"
+                    engine.errorMessage = "导出 Markdown 失败：\(error.localizedDescription)"
                 }
             }
         }
-    }
-
-    private func joinedPages(_ pages: [Int: String]) -> String {
-        pages.keys.sorted().compactMap { page in
-            pages[page].map { "[第 \(page) 页]\n\($0)" }
-        }
-        .joined(separator: "\n\n")
-    }
-
-    private func markdownPages(_ pages: [Int: String]) -> String {
-        let sections = pages.keys.sorted().compactMap { page in
-            pages[page].map { "## 第 \(page) 页\n\n\($0)" }
-        }
-        return (["# \(engine.pdfFileName) AI 净化校对正文"] + sections)
-            .joined(separator: "\n\n")
     }
 }
 
-// MARK: - 空状态提示 (Apple Content Unavailable 风格)
-private struct EmptyResultState: View {
+// MARK: - 单页图文混排展示子视图
+private struct PageContentView: View {
+    let page: ExtractedPageContent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            ForEach(page.elements) { element in
+                switch element {
+                case .paragraph(let text):
+                    Text(text)
+                        .font(.system(size: 14, weight: .regular, design: .default))
+                        .lineSpacing(5)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                case .image(let extImg):
+                    IllustrationCardView(image: extImg)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 单张插图卡片
+private struct IllustrationCardView: View {
+    let image: ExtractedImage
+
+    var body: some View {
+        VStack(spacing: Theme.Spacing.xs) {
+            Image(nsImage: image.nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 480)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                .subtleBorder(cornerRadius: Theme.Radius.md)
+                .bentoCardShadow()
+                .contextMenu {
+                    Button("拷贝此图片") {
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.writeObjects([image.nsImage])
+                    }
+                    Button("另存为图片...") {
+                        saveSingleImage()
+                    }
+                }
+
+            HStack {
+                Text("插图 P\(image.pageNumber)-\(image.imageIndex)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.writeObjects([image.nsImage])
+                } label: {
+                    Label("拷贝图片", systemImage: "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            }
+            .frame(maxWidth: 480)
+            .padding(.horizontal, Theme.Spacing.xs)
+        }
+        .padding(.vertical, Theme.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func saveSingleImage() {
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [.png]
+        savePanel.nameFieldStringValue = "P\(image.pageNumber)_\(image.imageIndex).png"
+        savePanel.begin { res in
+            if res == .OK, let targetURL = savePanel.url {
+                if let tiff = image.nsImage.tiffRepresentation,
+                   let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: targetURL)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 空状态提示
+private struct EmptyStateView: View {
     let systemImage: String
     let title: String
     let subtitle: String
@@ -642,19 +622,19 @@ private struct EmptyResultState: View {
     var body: some View {
         VStack(spacing: Theme.Spacing.md) {
             Image(systemName: systemImage)
-                .font(.system(size: 38, weight: .light))
+                .font(.system(size: 44, weight: .light))
                 .foregroundStyle(.secondary)
 
             VStack(spacing: Theme.Spacing.xs) {
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.primary)
                 Text(subtitle)
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                    .padding(.horizontal, Theme.Spacing.lg)
+                    .lineLimit(4)
+                    .padding(.horizontal, Theme.Spacing.xxl)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

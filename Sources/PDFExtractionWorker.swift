@@ -18,13 +18,24 @@ struct DetectedWatermark: Sendable {
     let occurrenceCount: Int
 }
 
-struct PageExtractionOutput: Sendable {
+public struct PageExtractionOutput: Sendable {
+    public let content: ExtractedPageContent
+    public let warning: String?
+
+    public init(content: ExtractedPageContent, warning: String?) {
+        self.content = content
+        self.warning = warning
+    }
+}
+
+private struct OCRLineInfo: Sendable {
     let text: String
-    let warning: String?
+    let rect: CGRect
 }
 
 private struct OCRExtractionOutput: Sendable {
-    let text: String
+    let lines: [OCRLineInfo]
+    let fullText: String
     let warning: String?
 }
 
@@ -140,11 +151,13 @@ actor PDFExtractionWorker {
         request: PDFExtractionRequest
     ) async -> PageExtractionOutput {
         guard !Task.isCancelled else {
-            return PageExtractionOutput(text: "", warning: nil)
+            let empty = ExtractedPageContent(pageNumber: pageNumber, fullText: "", elements: [], images: [])
+            return PageExtractionOutput(content: empty, warning: nil)
         }
         guard let page = document.page(at: pageNumber - 1) else {
+            let empty = ExtractedPageContent(pageNumber: pageNumber, fullText: "", elements: [], images: [])
             return PageExtractionOutput(
-                text: "",
+                content: empty,
                 warning: "第 \(pageNumber) 页不存在或无法读取。"
             )
         }
@@ -162,12 +175,54 @@ actor PDFExtractionWorker {
             )
         }
 
-        let rawText = extractTextLayer(selections: selections, request: request)
-        let formattedText = ParagraphReconstructor.reconstruct(rawText)
-        return PageExtractionOutput(
-            text: formattedText,
-            warning: nil
-        )
+        let pageBounds = page.bounds(for: .mediaBox)
+        let renderedCG = renderPageToCGImage(page: page, watermarkSelections: [])
+
+        var textBlocks: [DocumentLayoutAnalyzer.TextBlockInfo] = []
+        let scale: CGFloat = 2.0
+
+        for sel in selections {
+            guard let text = sel.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { continue }
+            if exactlyMatchesWatermark(text: text, filters: request.watermarkFilters, ignoreCase: request.ignoreCase) {
+                continue
+            }
+            let selBounds = sel.bounds(for: page)
+            let topY = max(0, (pageBounds.height - selBounds.maxY) * scale)
+            let rect = CGRect(
+                x: selBounds.minX * scale,
+                y: topY,
+                width: max(1, selBounds.width * scale),
+                height: max(1, selBounds.height * scale)
+            )
+            textBlocks.append(DocumentLayoutAnalyzer.TextBlockInfo(text: text, yPosition: topY, rect: rect))
+        }
+
+        if let cgImage = renderedCG {
+            let content = DocumentLayoutAnalyzer.analyzePage(
+                pageNumber: pageNumber,
+                pageImage: cgImage,
+                textBlocks: textBlocks,
+                watermarks: request.watermarkFilters
+            )
+            let formattedText = ParagraphReconstructor.reconstruct(content.fullText)
+            let finalContent = ExtractedPageContent(
+                pageNumber: pageNumber,
+                fullText: formattedText,
+                elements: content.elements,
+                images: content.images
+            )
+            return PageExtractionOutput(content: finalContent, warning: nil)
+        } else {
+            let rawText = extractTextLayer(selections: selections, request: request)
+            let formattedText = ParagraphReconstructor.reconstruct(rawText)
+            let content = ExtractedPageContent(
+                pageNumber: pageNumber,
+                fullText: formattedText,
+                elements: [.paragraph(formattedText)],
+                images: []
+            )
+            return PageExtractionOutput(content: content, warning: nil)
+        }
     }
 
     private func extractUsingOCR(
@@ -177,7 +232,7 @@ actor PDFExtractionWorker {
         request: PDFExtractionRequest
     ) async -> PageExtractionOutput {
         var rawImage: CGImage?
-        
+
         // 使用自动释放池包裹位图生成，防止连续 OCR 图像缓冲暴涨
         autoreleasepool {
             var selectionsToCover: [PDFSelection] = []
@@ -202,8 +257,9 @@ actor PDFExtractionWorker {
         }
 
         guard let initialImage = rawImage else {
+            let empty = ExtractedPageContent(pageNumber: pageNumber, fullText: "", elements: [], images: [])
             return PageExtractionOutput(
-                text: "",
+                content: empty,
                 warning: "第 \(pageNumber) 页无法渲染为图像，OCR 已跳过。"
             )
         }
@@ -224,19 +280,46 @@ actor PDFExtractionWorker {
 
         let ocrOutput = await performLocalOCR(on: processedImage)
         guard !Task.isCancelled else {
-            return PageExtractionOutput(text: "", warning: nil)
+            let empty = ExtractedPageContent(pageNumber: pageNumber, fullText: "", elements: [], images: [])
+            return PageExtractionOutput(content: empty, warning: nil)
         }
 
-        let cleanedText = cleanOCRText(
-            ocrOutput.text,
-            filters: request.watermarkFilters,
-            ignoreCase: request.ignoreCase
+        var textBlocks: [DocumentLayoutAnalyzer.TextBlockInfo] = []
+        for line in ocrOutput.lines {
+            let cleaned = cleanOCRText(
+                line.text,
+                filters: request.watermarkFilters,
+                ignoreCase: request.ignoreCase
+            )
+            if !cleaned.isEmpty {
+                textBlocks.append(DocumentLayoutAnalyzer.TextBlockInfo(
+                    text: cleaned,
+                    yPosition: line.rect.minY,
+                    rect: line.rect
+                ))
+            }
+        }
+
+        // 版面自适应分析：检测插图并与文字按纵向阅读顺序自然混排
+        let content = DocumentLayoutAnalyzer.analyzePage(
+            pageNumber: pageNumber,
+            pageImage: processedImage,
+            textBlocks: textBlocks,
+            watermarks: request.watermarkFilters
         )
-        let formattedText = ParagraphReconstructor.reconstruct(cleanedText)
+
+        let formattedText = ParagraphReconstructor.reconstruct(content.fullText)
+        let finalContent = ExtractedPageContent(
+            pageNumber: pageNumber,
+            fullText: formattedText,
+            elements: content.elements,
+            images: content.images
+        )
+
         let warning = ocrOutput.warning.map {
             "第 \(pageNumber) 页 OCR 失败：\($0)"
         }
-        return PageExtractionOutput(text: formattedText, warning: warning)
+        return PageExtractionOutput(content: finalContent, warning: warning)
     }
 
     /// 文本层只删除整行完全匹配的水印，避免误删正文中恰好包含同一词语的句子。
@@ -406,7 +489,7 @@ actor PDFExtractionWorker {
             let request = VNRecognizeTextRequest { request, error in
                 if let error {
                     continuation.resume(
-                        returning: OCRExtractionOutput(text: "", warning: error.localizedDescription)
+                        returning: OCRExtractionOutput(lines: [], fullText: "", warning: error.localizedDescription)
                     )
                     return
                 }
@@ -414,19 +497,32 @@ actor PDFExtractionWorker {
                 guard let observations = request.results as? [VNRecognizedTextObservation] else {
                     continuation.resume(
                         returning: OCRExtractionOutput(
-                            text: "",
+                            lines: [],
+                            fullText: "",
                             warning: "Vision 未返回可解析的文本结果。"
                         )
                     )
                     return
                 }
 
-                let lines = observations.compactMap {
-                    $0.topCandidates(1).first?.string
+                let imageWidth = CGFloat(image.width)
+                let imageHeight = CGFloat(image.height)
+
+                var lines: [OCRLineInfo] = []
+                for obs in observations {
+                    guard let candidate = obs.topCandidates(1).first?.string else { continue }
+                    // Vision boundingBox: origin (0..1, 0..1) at bottom-left
+                    let boxX = obs.boundingBox.minX * imageWidth
+                    let boxY = (1.0 - obs.boundingBox.maxY) * imageHeight
+                    let boxW = obs.boundingBox.width * imageWidth
+                    let boxH = obs.boundingBox.height * imageHeight
+                    let rect = CGRect(x: boxX, y: boxY, width: boxW, height: boxH)
+                    lines.append(OCRLineInfo(text: candidate, rect: rect))
                 }
-                let text = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+
+                let fullText = lines.map { $0.text }.joined(separator: "\n")
                 continuation.resume(
-                    returning: OCRExtractionOutput(text: text, warning: nil)
+                    returning: OCRExtractionOutput(lines: lines, fullText: fullText, warning: nil)
                 )
             }
 
@@ -438,7 +534,7 @@ actor PDFExtractionWorker {
                 try requestHandler.perform([request])
             } catch {
                 continuation.resume(
-                    returning: OCRExtractionOutput(text: "", warning: error.localizedDescription)
+                    returning: OCRExtractionOutput(lines: [], fullText: "", warning: error.localizedDescription)
                 )
             }
         }

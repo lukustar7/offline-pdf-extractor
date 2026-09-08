@@ -24,11 +24,11 @@ swiftc \
     -sdk "${SDK_PATH}" \
     -target "${ARCHITECTURE}-apple-macosx${DEPLOYMENT_TARGET}" \
     -module-cache-path "${MODULE_CACHE_DIR}" \
-    Sources/AIEndpoint.swift \
-    Sources/OpenAIStreamParser.swift \
     Sources/PageRangeParser.swift \
     Sources/PDFProcessingConfiguration.swift \
     Sources/ParagraphReconstructor.swift \
+    Sources/DocumentLayoutAnalyzer.swift \
+    Sources/DocxDocumentBuilder.swift \
     Tests/PDFExtractorCoreTests.swift \
     -o "${TEST_EXECUTABLE}"
 

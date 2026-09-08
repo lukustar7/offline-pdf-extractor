@@ -59,21 +59,21 @@ struct LaunchView: View {
                     icon: "bolt.horizontal.fill",
                     tint: .orange,
                     title: "智能通道探测",
-                    subtitle: "自动识别文字层或匹配离线 Vision OCR"
+                    subtitle: "自动识别纯文本或匹配离线 Vision OCR"
                 )
 
                 LaunchFeatureCard(
-                    icon: "wand.and.stars",
+                    icon: "photo.on.rectangle.angled",
                     tint: .blue,
-                    title: "科学通道去水印",
-                    subtitle: "红通道滤除彩色公章，色阶洗白浅灰杂印"
+                    title: "图文图表完整留存",
+                    subtitle: "自动定位截取插图与表格，原位自然穿插"
                 )
 
                 LaunchFeatureCard(
-                    icon: "text.alignleft",
+                    icon: "doc.richtext.fill",
                     tint: .indigo,
-                    title: "智能段落重构",
-                    subtitle: "自动合并生硬断行回车，可选本地 AI 精修"
+                    title: "Word (.docx) 直出",
+                    subtitle: "单文件无损内嵌插图与排版，开箱即用"
                 )
             }
             .frame(maxWidth: 720)

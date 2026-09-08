@@ -1,5 +1,7 @@
 import Darwin
 import Foundation
+import AppKit
+import CoreGraphics
 
 // MARK: - 零依赖测试基础设施
 
@@ -59,12 +61,13 @@ private func requireThrows<ExpectedError>(
 
 @main
 struct PDFExtractorCoreTests {
+    @MainActor
     static func main() {
         var suite = CoreTestSuite()
         runPageRangeTests(in: &suite)
-        runEndpointTests(in: &suite)
-        runStreamParserTests(in: &suite)
         runParagraphReconstructorTests(in: &suite)
+        runDocumentLayoutAnalyzerTests(in: &suite)
+        runDocxDocumentBuilderTests(in: &suite)
         suite.finish()
     }
 
@@ -124,142 +127,6 @@ struct PDFExtractorCoreTests {
         }
     }
 
-    private static func runEndpointTests(in suite: inout CoreTestSuite) {
-        suite.run("端点末尾斜杠不会形成重复路径") {
-            let endpoint = try AIEndpoint("http://localhost:11434/v1/")
-            try require(
-                endpoint.modelsURL.absoluteString == "http://localhost:11434/v1/models",
-                "模型列表路径不正确"
-            )
-            try require(
-                endpoint.chatCompletionsURL.absoluteString
-                    == "http://localhost:11434/v1/chat/completions",
-                "对话接口路径不正确"
-            )
-            try require(endpoint.isLocalNetwork, "localhost 应识别为本地地址")
-            try require(!endpoint.usesTLS, "HTTP 地址不应标记为 TLS")
-        }
-
-        suite.run("私有 IPv4 与 IPv6 回环地址属于本地网络") {
-            try require(
-                AIEndpoint("http://172.16.3.8:1234/v1").isLocalNetwork,
-                "私有 IPv4 未识别为本地地址"
-            )
-            try require(
-                AIEndpoint("http://[::1]:11434/v1").isLocalNetwork,
-                "IPv6 回环地址未识别为本地地址"
-            )
-        }
-
-        suite.run("相似域名不能伪装成私有地址") {
-            try require(
-                !AIEndpoint("https://10.example.com/v1").isLocalNetwork,
-                "10.example.com 被错误识别为内网地址"
-            )
-            try require(
-                !AIEndpoint("https://fcevil.example/v1").isLocalNetwork,
-                "fc 前缀域名被错误识别为 IPv6 本地地址"
-            )
-            try require(
-                !AIEndpoint("https://192.168.example.com/v1").isLocalNetwork,
-                "192.168 前缀域名被错误识别为内网地址"
-            )
-        }
-
-        suite.run("公网 HTTPS 被识别为外部加密端点") {
-            let endpoint = try AIEndpoint("https://api.example.com/v1")
-            try require(!endpoint.isLocalNetwork, "公网域名不应识别为本地地址")
-            try require(endpoint.usesTLS, "HTTPS 地址应标记为 TLS")
-        }
-
-        suite.run("拒绝不支持的协议与内嵌凭证") {
-            try requireThrows(AIEndpointError.unsupportedScheme) {
-                _ = try AIEndpoint("file:///tmp/model")
-            }
-            try requireThrows(AIEndpointError.embeddedCredentials) {
-                _ = try AIEndpoint("https://user:secret@example.com/v1")
-            }
-        }
-    }
-
-    private static func runStreamParserTests(in suite: inout CoreTestSuite) {
-        suite.run("跨网络分包的 JSON 会被重新拼合") {
-            var parser = OpenAIStreamParser()
-            let line = try makeDeltaLine("你好")
-            let splitIndex = line.count / 2
-
-            try require(
-                try parser.append(Data(line.prefix(splitIndex))).isEmpty,
-                "不完整数据不应提前产出正文"
-            )
-            try require(
-                try parser.append(Data(line.suffix(from: splitIndex))) == ["你好"],
-                "分包数据没有正确拼合"
-            )
-            try require(try parser.finish().isEmpty, "完成后不应重复产出正文")
-        }
-
-        suite.run("末行没有换行符时仍可解析") {
-            var parser = OpenAIStreamParser()
-            let line = try makeDeltaLine("完成", includeSpaceAfterDataPrefix: false)
-
-            try require(
-                try parser.append(Data(line.dropLast())).isEmpty,
-                "没有换行符时应等待 finish"
-            )
-            try require(try parser.finish() == ["完成"], "末行正文丢失")
-        }
-
-        suite.run("兼容非流式完整响应") {
-            var parser = OpenAIStreamParser()
-            let object: [String: Any] = [
-                "choices": [["message": ["content": "完整结果"]]]
-            ]
-            var line = try JSONSerialization.data(withJSONObject: object)
-            line.append(10)
-            try require(
-                try parser.append(line) == ["完整结果"],
-                "非流式响应没有被兼容解析"
-            )
-        }
-
-        suite.run("服务错误正文转换为可见错误") {
-            var parser = OpenAIStreamParser()
-            let object: [String: Any] = ["error": ["message": "model not found"]]
-            var line = Data("data: ".utf8)
-            line.append(try JSONSerialization.data(withJSONObject: object))
-            line.append(10)
-
-            try requireThrows(
-                OpenAIStreamParserError.serviceError("model not found")
-            ) {
-                _ = try parser.append(line)
-            }
-        }
-
-        suite.run("未分行缓冲超过一 MiB 时停止解析") {
-            var parser = OpenAIStreamParser()
-            let oversizedLine = Data(repeating: 65, count: 1_048_577)
-            try requireThrows(OpenAIStreamParserError.bufferLimitExceeded) {
-                _ = try parser.append(oversizedLine)
-            }
-        }
-    }
-
-    private static func makeDeltaLine(
-        _ content: String,
-        includeSpaceAfterDataPrefix: Bool = true
-    ) throws -> Data {
-        let object: [String: Any] = [
-            "choices": [["delta": ["content": content]]]
-        ]
-        let prefix = includeSpaceAfterDataPrefix ? "data: " : "data:"
-        var line = Data(prefix.utf8)
-        line.append(try JSONSerialization.data(withJSONObject: object))
-        line.append(10)
-        return line
-    }
-
     private static func runParagraphReconstructorTests(in suite: inout CoreTestSuite) {
         suite.run("中文段内硬换行自动合并且标点正常分段") {
             let input = "这是第一行的文字，后面\n还有一句话。这是第二句。\n\n这是新段落。"
@@ -282,5 +149,140 @@ struct PDFExtractorCoreTests {
             try require(output.contains("1. 第一项列表\n\n2. 第二项列表"), "列表项未独立分段")
         }
     }
+
+    @MainActor
+    private static func runDocumentLayoutAnalyzerTests(in suite: inout CoreTestSuite) {
+        suite.run("图文混排按垂直Y轴自然穿插") {
+            let textBlocks = [
+                DocumentLayoutAnalyzer.TextBlockInfo(text: "顶部介绍段落。", yPosition: 50),
+                DocumentLayoutAnalyzer.TextBlockInfo(text: "底部总结段落。", yPosition: 350)
+            ]
+
+            let testImage = makeTestNSImage(width: 200, height: 100)
+            let imageBounds = CGRect(x: 50, y: 150, width: 200, height: 100)
+            let extractedImg = ExtractedImage(
+                pageNumber: 1,
+                imageIndex: 1,
+                nsImage: testImage,
+                bounds: imageBounds
+            )
+
+            let elements = DocumentLayoutAnalyzer.interweave(
+                textBlocks: textBlocks,
+                images: [extractedImg]
+            )
+
+            try require(elements.count == 3, "混排元素总数应为 3，实际为 \(elements.count)")
+            
+            // 验证顺序：文本 -> 图片 -> 文本
+            if case .paragraph(let text) = elements[0] {
+                try require(text == "顶部介绍段落。", "首个元素应为顶部段落")
+            } else {
+                throw AssertionFailure(description: "首个元素应为段落")
+            }
+
+            if case .image(let img) = elements[1] {
+                try require(img.imageIndex == 1, "中间元素应为插图 1")
+            } else {
+                throw AssertionFailure(description: "第二个元素应为插图")
+            }
+
+            if case .paragraph(let text) = elements[2] {
+                try require(text == "底部总结段落。", "末尾元素应为底部总结段落")
+            } else {
+                throw AssertionFailure(description: "末尾元素应为段落")
+            }
+        }
+
+        suite.run("无插图页面产生单一文本段落流") {
+            let textBlocks = [
+                DocumentLayoutAnalyzer.TextBlockInfo(text: "第一段落。", yPosition: 10),
+                DocumentLayoutAnalyzer.TextBlockInfo(text: "第二段落。", yPosition: 60)
+            ]
+
+            let elements = DocumentLayoutAnalyzer.interweave(
+                textBlocks: textBlocks,
+                images: []
+            )
+
+            try require(elements.count == 2, "纯文本混排元素数应为 2")
+        }
+    }
+
+    @MainActor
+    private static func runDocxDocumentBuilderTests(in suite: inout CoreTestSuite) {
+        suite.run("Word (.docx) 单文件生成且内嵌插图") {
+            let testImage = makeTestNSImage(width: 80, height: 80)
+            let extractedImg = ExtractedImage(
+                pageNumber: 1,
+                imageIndex: 1,
+                nsImage: testImage,
+                bounds: CGRect(x: 0, y: 50, width: 80, height: 80)
+            )
+
+            let pageContent = ExtractedPageContent(
+                pageNumber: 1,
+                fullText: "测试 Word 导出内容段落",
+                elements: [
+                    .paragraph("测试 Word 导出内容段落，这是第一段。"),
+                    .image(extractedImg),
+                    .paragraph("这是插图后的第二段落。")
+                ],
+                images: [extractedImg]
+            )
+
+            let docxData = try DocxDocumentBuilder.buildDocxData(
+                title: "单元测试文档",
+                pages: [pageContent]
+            )
+
+            try require(!docxData.isEmpty, "生成 Word 数据不可为空")
+            try require(docxData.count > 100, "生成的 docx 数据过小 (\(docxData.count) bytes)")
+
+            // Word (.docx) 是标准的 Zip 容器，前 4 字节魔数为 PK\x03\x04
+            let header = [UInt8](docxData.prefix(4))
+            try require(header == [0x50, 0x4B, 0x03, 0x04], "Word docx 文件头必须为标准 Zip 魔数 PK\\x03\\x04")
+        }
+
+        suite.run("Markdown 导出排版文本与图文清单") {
+            let testImage = makeTestNSImage(width: 60, height: 60)
+            let extractedImg = ExtractedImage(
+                pageNumber: 1,
+                imageIndex: 1,
+                nsImage: testImage,
+                bounds: CGRect(x: 0, y: 20, width: 60, height: 60)
+            )
+
+            let pageContent = ExtractedPageContent(
+                pageNumber: 1,
+                fullText: "Markdown 正文段落",
+                elements: [
+                    .paragraph("Markdown 正文段落。"),
+                    .image(extractedImg)
+                ],
+                images: [extractedImg]
+            )
+
+            let (mdText, mdImages) = DocxDocumentBuilder.buildMarkdown(
+                title: "测试 Markdown",
+                pages: [pageContent]
+            )
+            try require(mdText.contains("# 测试 Markdown"), "Markdown 应包含主标题")
+            try require(mdText.contains("![page_1_fig_1.png](images/page_1_fig_1.png)"), "Markdown 应包含插图链接")
+            try require(mdImages.count == 1, "Markdown 导出的图片数量应为 1")
+        }
+    }
+
+    @MainActor
+    private static func makeTestNSImage(width: Int, height: Int) -> NSImage {
+        let size = NSSize(width: width, height: height)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        image.unlockFocus()
+        return image
+    }
 }
+
 

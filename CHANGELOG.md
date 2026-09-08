@@ -4,6 +4,24 @@
 
 本项目遵循 [语义化版本控制 (SemVer)](https://semver.org/spec/v2.0.0.html) 规范。
 
+## [1.5.0] - 2026-09-08
+
+### Added
+- 全新图文工作室（Document Studio）：重塑结果检查器为开阔大气的图文混排工作台，按自然阅读顺序呈现正文段落与高清内嵌插图卡片。
+- 版面插图智能检测与截取引擎 (`DocumentLayoutAnalyzer`)：在 PDF 电子版和全扫描件中自动定位图表与插图区域，智能排除文字网格并无损裁剪高清插图。
+- 原生 Microsoft Word (`.docx`) 单文件生成器 (`DocxDocumentBuilder`)：利用 macOS 原生 Office Open XML 引擎，将排版与插图无损内嵌为单一 Word 文件，开箱即用。
+- Markdown 混合包导出：支持导出带图片附件清单的标准 Markdown 内容。
+
+### Changed
+- 废弃 TXT 纯文本无图格式，统一将支持富排版与插图的 Microsoft Word (`.docx`) 设为核心导出格式。
+- 全面优化界面控件尺寸与布局，主要操作控件统一为 36px/38px 标准 macOS 大气按钮，消除拥挤微型按钮。
+- 偏好设置窗口重构为极简三项（导出与插图、图像与去水印、隐私与关于）。
+- 更新 `Info.plist`，彻底移除本地网络权限声明与 ATS 配置，确立 100% 纯本地离线运行模式。
+
+### Removed
+- 彻底剥离 AI 子系统与外部模型连接，移除 `AIEndpoint.swift`、`AIProcessingEngine.swift`、`AIPromptBuilder.swift`、`OpenAIStreamParser.swift` 与 `KeychainHelper.swift`。
+- 移除应用菜单与界面中所有的 AI 净化按钮、状态标签与相关设置。
+
 ## [1.4.0] - 2026-09-03
 
 ### Added

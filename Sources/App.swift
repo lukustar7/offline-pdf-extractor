@@ -3,11 +3,9 @@ import SwiftUI
 // MARK: - App 入口
 @main
 struct PDFExtractorApp: App {
-    @StateObject private var aiEngine = AIProcessingEngine()
-    
     var body: some Scene {
         WindowGroup {
-            ContentView(aiEngine: aiEngine)
+            ContentView()
                 .frame(minWidth: 1000, minHeight: 700)
         }
         .commands {
@@ -22,16 +20,12 @@ struct PDFExtractorApp: App {
                 .keyboardShortcut("o", modifiers: .command)
             }
             
-            // 3. 新建系统级“控制”主菜单，容纳“开始文字提取”(⌘R) 和 “AI 净化排版”指令。
+            // 3. 新建系统级“控制”主菜单，容纳“开始文字提取”(⌘R)。
             CommandMenu("控制") {
                 Button("开始文字提取") {
                     NotificationCenter.default.post(name: NSNotification.Name("StartExtractionNotification"), object: nil)
                 }
                 .keyboardShortcut("r", modifiers: .command)
-                
-                Button("AI 净化排版") {
-                    NotificationCenter.default.post(name: NSNotification.Name("StartAINotification"), object: nil)
-                }
             }
             
             // 4. 在“帮助”菜单下注入“欢迎使用 PDF 文字提取”入口，便于随时调出开屏介绍。
@@ -44,7 +38,7 @@ struct PDFExtractorApp: App {
         
         // 5. 挂载标准 macOS 偏好设置窗口 (⌘,)
         Settings {
-            SettingsView(aiEngine: aiEngine)
+            SettingsView()
         }
     }
 }

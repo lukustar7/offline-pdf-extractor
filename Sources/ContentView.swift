@@ -1,10 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
-// MARK: - 主容器视图 (macOS 原生工作台架构)
+// MARK: - 主容器视图 (macOS 原生三栏工作台架构)
 
 struct ContentView: View {
     @StateObject private var engine = PDFExtractorEngine()
-    @ObservedObject var aiEngine: AIProcessingEngine
 
     // 左右侧栏折叠状态控制 (持久化保存用户视口偏好)
     @AppStorage("showSidebar") private var showSidebar = true
@@ -32,11 +32,11 @@ struct ContentView: View {
                 )
                 .transition(.opacity)
             } else {
-                // 2. 文件载入完成后，展示舒展的 缩略图侧栏 + PDF 原生画布 + 文本工作室
+                // 2. 文件载入完成后，展示舒展的 缩略图侧栏 + PDF 原生画布 + 图文工作室
                 HSplitView {
                     if showSidebar {
                         SidebarThumbnailView(engine: engine)
-                            .frame(minWidth: 140, idealWidth: 160, maxWidth: 220)
+                            .frame(minWidth: 140, idealWidth: 170, maxWidth: 240)
                             .transition(.move(edge: .leading).combined(with: .opacity))
                     }
 
@@ -45,16 +45,15 @@ struct ContentView: View {
                             engine: engine,
                             currentPage: $engine.currentPage
                         )
-                        .frame(minWidth: 380, idealWidth: 560, maxWidth: .infinity)
+                        .frame(minWidth: 380, idealWidth: 540, maxWidth: .infinity)
 
                         if showInspector {
                             ResultInspectorView(
                                 engine: engine,
-                                aiEngine: aiEngine,
                                 currentPage: $engine.currentPage,
                                 onStartExtraction: startExtractionAction
                             )
-                            .frame(minWidth: 360, idealWidth: 460, maxWidth: 800)
+                            .frame(minWidth: 380, idealWidth: 480, maxWidth: 850)
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                         }
                     }
@@ -72,7 +71,7 @@ struct ContentView: View {
                 engine.showWelcomeSheet = true
             }
         }
-        // 挂载 macOS 顶级 Window 工具栏支持，提供全键盘快捷键与折叠工作流
+        // 挂载 macOS 顶级 Window 工具栏支持
         .toolbar {
             // 1. 左侧：侧边栏折叠按钮
             ToolbarItemGroup(placement: .navigation) {
@@ -89,7 +88,7 @@ struct ContentView: View {
                 }
             }
 
-            // 2. 中间：全局页码联动翻页与智能探针状态
+            // 2. 中间：页码控制组与智能格式探针徽章
             ToolbarItemGroup(placement: .principal) {
                 if engine.pdfTotalPages > 0 {
                     HStack(spacing: Theme.Spacing.md) {
@@ -112,7 +111,7 @@ struct ContentView: View {
                                     engine.pageInput = String(engine.currentPage)
                                 }
                             })
-                            .frame(width: 44)
+                            .frame(width: 48)
                             .textFieldStyle(.roundedBorder)
                             .multilineTextAlignment(.center)
                             .disabled(engine.isProcessing)
@@ -133,18 +132,18 @@ struct ContentView: View {
                             .help("下一页")
                         }
 
-                        // 自动嗅探模式胶囊
+                        // 智能探针格式胶囊
                         if !engine.detectedScenarioTitle.isEmpty {
-                            HStack(spacing: 4) {
+                            HStack(spacing: 5) {
                                 Image(systemName: engine.hasTextLayer ? "bolt.fill" : "wand.and.stars")
-                                    .font(.system(size: 10))
+                                    .font(.system(size: 11))
                                     .foregroundStyle(Color.accentColor)
                                 Text(engine.detectedScenarioTitle)
-                                    .font(.system(size: 11, weight: .medium))
+                                    .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(.secondary)
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
                             .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
                             .clipShape(Capsule())
                             .subtleBorder(cornerRadius: 12)
@@ -153,7 +152,7 @@ struct ContentView: View {
                 }
             }
 
-            // 3. 右侧：操作按钮与检查器折叠
+            // 3. 右侧：操作按钮与工作室折叠
             ToolbarItemGroup(placement: .primaryAction) {
                 if engine.pdfFileName.isEmpty {
                     Button(action: openFileAction) {
@@ -194,7 +193,7 @@ struct ContentView: View {
                     }) {
                         Image(systemName: "sidebar.trailing")
                     }
-                    .help(showInspector ? "收起文本工作室 (⌘⌥I)" : "展开文本工作室 (⌘⌥I)")
+                    .help(showInspector ? "收起图文工作室 (⌘⌥I)" : "展开图文工作室 (⌘⌥I)")
                     .keyboardShortcut("i", modifiers: [.command, .option])
                 }
             }
@@ -207,13 +206,13 @@ struct ContentView: View {
             openFileAction()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StartExtractionNotification"))) { _ in
-            if !engine.pdfFileName.isEmpty && !engine.isProcessing && !aiEngine.isAIProcessing && !engine.isAnalyzingWatermarks {
+            if !engine.pdfFileName.isEmpty && !engine.isProcessing && !engine.isAnalyzingWatermarks {
                 startExtractionAction()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StartAINotification"))) { _ in
-            if !engine.extractedPagesText.isEmpty && !aiEngine.isAIProcessing && !engine.isProcessing {
-                startAIProcessingAction()
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ExportDocxNotification"))) { _ in
+            if !engine.extractedPages.isEmpty {
+                exportDocxShortcut()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowWelcomeSheetNotification"))) { _ in
@@ -221,7 +220,6 @@ struct ContentView: View {
         }
         .onDisappear {
             engine.cancelPDFExtraction(showStatus: false)
-            aiEngine.cancelAIProcessing(showStatus: false)
         }
     }
 
@@ -239,12 +237,10 @@ struct ContentView: View {
 
     /// 所有导入入口统一经过这里
     private func loadPDF(_ url: URL) {
-        aiEngine.cancelAIProcessing(showStatus: false)
-        aiEngine.clear()
         engine.loadPDF(url: url)
     }
 
-    /// 触发物理分段提取文字
+    /// 触发物理分段提取文字与插图
     private func startExtractionAction() {
         let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
         let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
@@ -284,32 +280,31 @@ struct ContentView: View {
         }
     }
 
-    /// 触发物理分段 AI 净化
-    private func startAIProcessingAction() {
-        let showChanges = UserDefaults.standard.bool(forKey: "aiShowChanges")
-        let passWatermarks = UserDefaults.standard.bool(forKey: "aiPassWatermarks")
-        let active = Set(engine.watermarkCandidates.filter { $0.isSelected }.map { $0.text })
-        let customWatermarks = UserDefaults.standard.string(forKey: "customWatermarks") ?? ""
-        let storedPrompt = AIPromptBuilder.storedSystemPrompt()
-        let finalPrompt = AIPromptBuilder.composedPrompt(
-            basePrompt: storedPrompt,
-            showChanges: showChanges,
-            passWatermarks: passWatermarks,
-            activeWatermarks: active,
-            customWatermarks: customWatermarks
-        )
+    /// 快捷键触发导出 Word 文档
+    private func exportDocxShortcut() {
+        guard !engine.extractedPages.isEmpty else { return }
+        let savePanel = NSSavePanel()
+        let docxType = UTType(filenameExtension: "docx") ?? .data
+        savePanel.allowedContentTypes = [docxType]
+        let baseName = (engine.pdfFileName as NSString).deletingPathExtension
+        savePanel.nameFieldStringValue = "\(baseName).docx"
 
-        aiEngine.processTextWithAI(
-            extractedPages: engine.extractedPagesText,
-            targetPages: engine.extractedPagesText.keys.sorted(),
-            systemPrompt: finalPrompt
-        )
+        savePanel.begin { response in
+            if response == .OK, let url = savePanel.url {
+                do {
+                    let docxData = try engine.buildDocxData()
+                    try docxData.write(to: url)
+                } catch {
+                    engine.errorMessage = "导出 Word 文档失败：\(error.localizedDescription)"
+                }
+            }
+        }
     }
 }
 
 #if canImport(PreviewsMacros)
 #Preview {
-    ContentView(aiEngine: AIProcessingEngine())
+    ContentView()
         .frame(minWidth: 1_000, minHeight: 700)
 }
 #endif

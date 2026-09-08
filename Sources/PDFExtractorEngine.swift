@@ -34,6 +34,7 @@ final class PDFExtractorEngine: ObservableObject {
     @Published var isScanningAnimating = false
     @Published var hasTextLayer = true
     @Published var detectedScenarioTitle = ""
+    @Published var extractedPages: [Int: ExtractedPageContent] = [:]
 
     var fullExtractedText: String {
         extractedPagesText.keys.sorted().compactMap { page in
@@ -44,6 +45,28 @@ final class PDFExtractorEngine: ObservableObject {
 
     var totalExtractedWordCount: Int {
         extractedPagesText.values.reduce(0) { $0 + $1.count }
+    }
+
+    var totalExtractedImagesCount: Int {
+        extractedPages.values.reduce(0) { $0 + $1.images.count }
+    }
+
+    /// 将已提取的所有页面图文混排内容生成为 Word 文档 (.docx)
+    func buildDocxData() throws -> Data {
+        let title = (pdfFileName as NSString).deletingPathExtension
+        return try DocxDocumentBuilder.buildDocxData(
+            title: title.isEmpty ? "提取文档" : title,
+            pages: Array(extractedPages.values)
+        )
+    }
+
+    /// 将已提取的内容生成为 Markdown 格式与提取的图片数组
+    func buildMarkdown() -> (markdown: String, images: [(filename: String, image: NSImage)]) {
+        let title = (pdfFileName as NSString).deletingPathExtension
+        return DocxDocumentBuilder.buildMarkdown(
+            title: title.isEmpty ? "提取文档" : title,
+            pages: Array(extractedPages.values)
+        )
     }
 
     private(set) var pdfURL: URL?
@@ -154,6 +177,7 @@ final class PDFExtractorEngine: ObservableObject {
         currentStatus = "未加载文件"
         logOutput = ""
         extractedPagesText = [:]
+        extractedPages = [:]
         errorMessage = nil
         currentPage = 1
         pageInput = "1"
@@ -279,7 +303,8 @@ final class PDFExtractorEngine: ObservableObject {
                 guard !Task.isCancelled,
                       self.currentExtractionToken == token else { return }
 
-                self.extractedPagesText[pageNumber] = pageOutput.text
+                self.extractedPages[pageNumber] = pageOutput.content
+                self.extractedPagesText[pageNumber] = pageOutput.content.fullText
                 if let warning = pageOutput.warning {
                     self.errorMessage = warning
                     self.appendLog("警告：\(warning)")

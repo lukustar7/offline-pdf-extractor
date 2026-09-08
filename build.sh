@@ -22,7 +22,7 @@ STAGING_MACOS="${STAGING_CONTENTS}/MacOS"
 STAGING_RESOURCES="${STAGING_CONTENTS}/Resources"
 PREVIOUS_APP=".build/previous-${APP_NAME}.app"
 
-echo "=== 构建 macOS PDF 文字提取工具 v1.4.0 ==="
+echo "=== 构建 macOS PDF 文字提取工具 v1.5.0 ==="
 
 echo "1/6 校验配置并运行核心测试..."
 plutil -lint Info.plist >/dev/null
