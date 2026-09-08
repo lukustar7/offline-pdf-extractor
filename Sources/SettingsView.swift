@@ -181,7 +181,7 @@ struct SettingsView: View {
             
             settingRow(label: "应用版本:") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("PDF 文字提取 v1.6.0")
+                    Text("PDF 文字提取 v1.7.0")
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
                     Text("纯血 Apple Silicon (M系列芯片) 深度调优，三大处理模式横排自选，支持 Word (.docx) 单文件无损直出。")
                         .font(.system(size: 11))

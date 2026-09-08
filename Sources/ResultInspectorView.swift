@@ -24,7 +24,6 @@ struct ResultInspectorView: View {
     @AppStorage("processingScenario") private var processingScenario: PDFProcessingScenario = .electronicTextWithTextWatermark
     @AppStorage("removeLightWatermarks") private var removeLightWatermarks = true
     @AppStorage("removeColorStamps") private var removeColorStamps = false
-    @AppStorage("eraseImageWatermark") private var eraseImageWatermark = false
     @AppStorage("pageRangeMode") private var pageRangeMode = 0 // 0: 全部页, 1: 当前页, 2: 自定义
     @AppStorage("pageRangeString") private var pageRangeString = ""
     @AppStorage("customWatermarks") private var customWatermarks = ""
@@ -38,38 +37,105 @@ struct ResultInspectorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 1. 顶部工作台工具栏 (大气标准尺寸)
-            studioHeader
+            // 1. 置顶核心三大处理模式（Apple Liquid Glass 流体分段胶囊）
+            liquidModeSegmentedBar
 
-            Divider()
+            Divider().opacity(0.4)
 
-            // 2. 高级过滤与提取参数折叠抽屉
+            // 2. 辅助工具栏 (视图范围、参数微调折叠、主导出)
+            studioSubToolbar
+
+            Divider().opacity(0.4)
+
+            // 3. 渐进式参数设置展开抽屉 (Progressive Disclosure)
             if studioState.showOptionsDrawer {
                 optionsDrawer
                     .transition(.move(edge: .top).combined(with: .opacity))
-                Divider()
+                Divider().opacity(0.4)
             }
 
-            // 3. 核心三大处理模式横排大卡片按钮
-            modeSelectorRow
-            Divider()
-
-            // 4. 核心图文混排内容展示区
+            // 4. 核心图文混排阅读区 (以内容为中心，保证绝对对比度与高易读性)
             documentContentArea
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Divider()
+            Divider().opacity(0.4)
 
-            // 4. 底部状态与大尺寸操作栏
+            // 5. 底部悬浮状态与大气质感操作坞 (Floating Action Dock)
             studioBottomBar
         }
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.5))
     }
 
-    // MARK: - 1. 工作台主工具栏 (大气从容)
-    private var studioHeader: some View {
+    // MARK: - 1. 置顶三大模式流体胶囊 (Liquid Mode Segmented Bar)
+    private var liquidModeSegmentedBar: some View {
+        HStack(spacing: 6) {
+            ForEach(PDFProcessingScenario.allCases) { scenario in
+                let isSelected = processingScenario == scenario
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                        processingScenario = scenario
+                        if scenario == .fullyScanned {
+                            removeLightWatermarks = true
+                            removeColorStamps = true
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: scenario.systemImage)
+                            .font(.system(size: 13, weight: isSelected ? .bold : .medium))
+                            .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(scenario.title)
+                                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                                .foregroundStyle(isSelected ? Color.primary : .secondary)
+                                .lineLimit(1)
+
+                            Text(scenarioShortHint(scenario))
+                                .font(.system(size: 10))
+                                .foregroundStyle(isSelected ? Color.secondary : Color.secondary.opacity(0.7))
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.03))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(
+                                isSelected ? Color.accentColor.opacity(0.35) : Color.clear,
+                                lineWidth: 1
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(scenario.statusDescription)
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
+    }
+
+    private func scenarioShortHint(_ scenario: PDFProcessingScenario) -> String {
+        switch scenario {
+        case .electronicTextWithTextWatermark:
+            return "极速提取 · 原生排版"
+        case .scannedTextWithTextWatermark:
+            return "高精识别 · 滤文字印"
+        case .fullyScanned:
+            return "背景净化 · 消除底纹"
+        }
+    }
+
+    // MARK: - 2. 辅助工具栏 (切换对照范围、展开参数、导出)
+    private var studioSubToolbar: some View {
         HStack(spacing: Theme.Spacing.md) {
-            // 范围切换：当前页 vs 全篇大纲 (标准 regular 尺寸)
+            // 范围切换：当前页 vs 全篇大纲
             Picker("", selection: $viewScope) {
                 ForEach(StudioViewScope.allCases) { scope in
                     Text(scope.rawValue).tag(scope)
@@ -81,21 +147,26 @@ struct ResultInspectorView: View {
 
             Spacer()
 
-            // 参数设置展开按钮
+            // 去印与高级参数设置折叠按钮
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
                     studioState.showOptionsDrawer.toggle()
                 }
             } label: {
-                Label(
-                    studioState.showOptionsDrawer ? "收起参数" : "去印与过滤",
-                    systemImage: studioState.showOptionsDrawer ? "slider.horizontal.3.fill" : "slider.horizontal.3"
-                )
+                HStack(spacing: 4) {
+                    Image(systemName: studioState.showOptionsDrawer ? "slider.horizontal.3.fill" : "slider.horizontal.3")
+                    Text(studioState.showOptionsDrawer ? "收起参数" : "过滤与页码")
+                    if hasActiveFilters {
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 6, height: 6)
+                    }
+                }
                 .font(.system(size: 12, weight: .medium))
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
-            .help(studioState.showOptionsDrawer ? "收起去印参数与页码设置" : "展开去印参数与页码设置")
+            .help("调整水印词过滤与提取页码范围")
 
             // 核心主导出按钮：直接导出包含所有内嵌图片的 Word 文档 (.docx)
             Button(action: exportDocxAction) {
@@ -105,7 +176,7 @@ struct ResultInspectorView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
             .disabled(engine.extractedPages.isEmpty)
-            .help("将提取的文字与完整截取插图一并导出为 Word 文档 (.docx)")
+            .help("将提取的文字与完整截取插图一并导出为 Word 文档 (.docx)，并在访达中自动定位")
 
             // 更多操作下拉菜单
             Menu {
@@ -129,30 +200,50 @@ struct ResultInspectorView: View {
             .help("更多导出与复制操作")
         }
         .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.sm)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
+        .padding(.vertical, 7)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.2))
     }
 
-    // MARK: - 2. 折叠参数抽屉
+    private var hasActiveFilters: Bool {
+        !engine.watermarkCandidates.filter { $0.isSelected }.isEmpty || !customWatermarksList.isEmpty || pageRangeMode != 0
+    }
+
+    // MARK: - 3. 渐进式参数抽屉 (Progressive Disclosure)
     private var optionsDrawer: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            // 扫描件滤镜开关
-            if processingScenario != .electronicTextWithTextWatermark {
-                HStack(spacing: Theme.Spacing.lg) {
-                    Toggle("色阶拉伸洗白浅灰水印", isOn: $removeLightWatermarks)
-                        .toggleStyle(.checkbox)
-                        .font(.system(size: 12))
+            // 仅在“扫描正文 + 纸印水印”模式下展示通俗易懂的背景净化开关
+            if processingScenario == .fullyScanned {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wand.and.stars")
+                            .foregroundStyle(Color.accentColor)
+                            .font(.system(size: 12, weight: .bold))
+                        Text("纸印背景自动净化")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
 
-                    Toggle("红通道消除彩色公章", isOn: $removeColorStamps)
-                        .toggleStyle(.checkbox)
-                        .font(.system(size: 12))
+                    HStack(spacing: Theme.Spacing.xl) {
+                        Toggle("自动净化底纹与浅灰印记", isOn: $removeLightWatermarks)
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 12))
+
+                        Toggle("消除彩色印章与红印干扰", isOn: $removeColorStamps)
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 12))
+                    }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.accentColor.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
 
-            // 水印过滤词管理
+            // 水印过滤词管理（支持一键全选 / 一键清空）
             watermarkSection
 
-            // 提取范围
+            // 提取范围选择
             HStack(spacing: Theme.Spacing.md) {
                 Picker("提取范围:", selection: $pageRangeMode) {
                     Text("全部页面 (共 \(engine.pdfTotalPages) 页)").tag(0)
@@ -171,8 +262,8 @@ struct ResultInspectorView: View {
             }
             .font(.system(size: 12))
         }
-        .padding(Theme.Spacing.lg)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .padding(Theme.Spacing.md)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.45))
     }
 
     private var watermarkSection: some View {
@@ -182,12 +273,40 @@ struct ResultInspectorView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
 
+                if !engine.watermarkCandidates.isEmpty {
+                    Text("已发现 \(engine.watermarkCandidates.count) 处疑似高频水印")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+
+                    // 一键全选
+                    Button("全选") {
+                        for i in engine.watermarkCandidates.indices {
+                            engine.watermarkCandidates[i].isSelected = true
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+
+                    Text("·").foregroundStyle(.tertiary)
+
+                    // 一键清空
+                    Button("清空") {
+                        for i in engine.watermarkCandidates.indices {
+                            engine.watermarkCandidates[i].isSelected = false
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                }
+
                 Spacer()
 
                 TextField("输入要滤除的水印词...", text: $studioState.newWatermarkInput, onCommit: addCustomWatermark)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.regular)
-                    .frame(maxWidth: 200)
+                    .frame(maxWidth: 180)
 
                 Button(action: addCustomWatermark) {
                     Label("添加", systemImage: "plus")
@@ -247,29 +366,6 @@ struct ResultInspectorView: View {
                 }
             }
         }
-    }
-
-    // MARK: - 3. 三大处理模式横排大卡片按钮
-    private var modeSelectorRow: some View {
-        HStack(spacing: Theme.Spacing.sm) {
-            ForEach(PDFProcessingScenario.allCases) { scenario in
-                ModeCardButton(
-                    scenario: scenario,
-                    isSelected: processingScenario == scenario
-                ) {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
-                        processingScenario = scenario
-                        if scenario == .fullyScanned {
-                            removeLightWatermarks = true
-                            removeColorStamps = true
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.sm)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.2))
     }
 
     // MARK: - 4. 核心图文混排展示区 (开阔阅读流)
@@ -461,7 +557,7 @@ struct ResultInspectorView: View {
         pasteboard.setString(md, forType: .string)
     }
 
-    /// 导出为 Word 文档 (.docx)
+    /// 导出为 Word 文档 (.docx) 并在成功后自动在访达中定位
     private func exportDocxAction() {
         guard !engine.extractedPages.isEmpty else { return }
         let savePanel = NSSavePanel()
@@ -475,6 +571,8 @@ struct ResultInspectorView: View {
                 do {
                     let docxData = try engine.buildDocxData()
                     try docxData.write(to: url)
+                    // 自动在访达中定位高亮显示新生成的 Word 文档
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
                 } catch {
                     engine.errorMessage = "导出 Word 文档失败：\(error.localizedDescription)"
                 }
@@ -482,7 +580,7 @@ struct ResultInspectorView: View {
         }
     }
 
-    /// 导出为 Markdown 压缩包 (.zip)
+    /// 导出为 Markdown 压缩包 (.zip) 并在成功后自动在访达中定位
     private func exportMarkdownZipAction() {
         guard !engine.extractedPages.isEmpty else { return }
         let savePanel = NSSavePanel()
@@ -535,6 +633,9 @@ struct ResultInspectorView: View {
                             userInfo: [NSLocalizedDescriptionKey: "压缩包生成失败，退出码：\(process.terminationStatus)"]
                         )
                     }
+
+                    // 自动在访达中定位高亮显示生成的压缩包
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
                 } catch {
                     engine.errorMessage = "导出 Markdown 失败：\(error.localizedDescription)"
                 }
@@ -566,7 +667,7 @@ private struct PageContentView: View {
     }
 }
 
-// MARK: - 单张插图卡片
+// MARK: - 单张插图卡片 (支持鼠标原生拖拽到外部、拷贝与另存为)
 private struct IllustrationCardView: View {
     let image: ExtractedImage
 
@@ -579,6 +680,10 @@ private struct IllustrationCardView: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
                 .subtleBorder(cornerRadius: Theme.Radius.md)
                 .bentoCardShadow()
+                .onDrag {
+                    // 原生拖拽支持：按住可直接拖拽至访达、微信、备忘录等外部应用
+                    NSItemProvider(object: image.nsImage)
+                }
                 .contextMenu {
                     Button("拷贝此图片") {
                         let pb = NSPasteboard.general
@@ -607,6 +712,15 @@ private struct IllustrationCardView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.accentColor)
+
+                Button {
+                    saveSingleImage()
+                } label: {
+                    Label("另存为", systemImage: "arrow.down.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.secondary)
             }
             .frame(maxWidth: 480)
             .padding(.horizontal, Theme.Spacing.xs)
@@ -625,6 +739,7 @@ private struct IllustrationCardView: View {
                    let rep = NSBitmapImageRep(data: tiff),
                    let png = rep.representation(using: .png, properties: [:]) {
                     try? png.write(to: targetURL)
+                    NSWorkspace.shared.activateFileViewerSelecting([targetURL])
                 }
             }
         }
@@ -656,58 +771,6 @@ private struct EmptyStateView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-// MARK: - 单个处理模式大卡片按钮
-private struct ModeCardButton: View {
-    let scenario: PDFProcessingScenario
-    let isSelected: Bool
-    let onSelect: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            VStack(spacing: 5) {
-                HStack(spacing: 5) {
-                    Image(systemName: scenario.systemImage)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-                    Text(scenario.title)
-                        .font(.system(size: 12, weight: isSelected ? .bold : .semibold))
-                        .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.85))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                }
-
-                Text(scenario.subtitle)
-                    .font(.system(size: 10))
-                    .foregroundStyle(isSelected ? Color.secondary : Color.secondary.opacity(0.8))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.85)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, minHeight: 64)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 8)
-            .background(cardBackground)
-            .overlay(cardBorder)
-        }
-        .buttonStyle(.plain)
-        .help(scenario.statusDescription)
-    }
-
-    private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-            .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor).opacity(0.5))
-    }
-
-    private var cardBorder: some View {
-        RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-            .strokeBorder(
-                isSelected ? Color.accentColor : Color.secondary.opacity(0.18),
-                lineWidth: isSelected ? 1.5 : 0.8
-            )
     }
 }
 

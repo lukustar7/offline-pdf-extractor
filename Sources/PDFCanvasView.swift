@@ -28,52 +28,18 @@ struct PDFCanvasView: View {
         .background(Color(nsColor: .underPageBackgroundColor))
     }
 
-    // MARK: - 主视口与对比展示
+    // MARK: - 主视口展示
     @ViewBuilder
     private var mainViewport: some View {
-        if engine.isComparisonMode,
-           let original = engine.comparisonOriginal,
-           let filtered = engine.comparisonFiltered {
-            // 去水印前后对比视口 (Before / After Split)
-            HStack(spacing: Theme.Spacing.lg) {
-                VStack(spacing: Theme.Spacing.xs) {
-                    Text("原始扫描件 (含印章/水印)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Image(nsImage: original)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .background(Color.white)
-                        .paperShadow()
-                        .subtleBorder()
-                }
+        ZStack {
+            PDFPreviewView(
+                pdfDocument: engine.pdfDocument,
+                currentPage: $currentPage
+            )
 
-                VStack(spacing: Theme.Spacing.xs) {
-                    Text("Core Image 通道过滤后 (OCR 识别源)")
-                        .font(.caption)
-                        .foregroundStyle(Color.accentColor)
-                    Image(nsImage: filtered)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .background(Color.white)
-                        .paperShadow()
-                        .subtleBorder()
-                }
-            }
-            .padding(Theme.Spacing.xl)
-            .transition(.opacity)
-        } else {
-            // 标准 PDF 连续滚动阅读视口
-            ZStack {
-                PDFPreviewView(
-                    pdfDocument: engine.pdfDocument,
-                    currentPage: $currentPage
-                )
-
-                // 处理中微光动画
-                if engine.isProcessing {
-                    scanningLightOverlay
-                }
+            // 处理中微光动画
+            if engine.isProcessing {
+                scanningLightOverlay
             }
         }
     }

@@ -70,6 +70,12 @@ struct ContentView: View {
             if !hasShownWelcomeSheet {
                 engine.showWelcomeSheet = true
             }
+            DispatchQueue.main.async {
+                if let window = NSApp.windows.first(where: { $0.canBecomeMain }) {
+                    AppDelegate.mainWindow = window
+                    window.delegate = NSApp.delegate as? NSWindowDelegate
+                }
+            }
         }
         // 挂载 macOS 顶级 Window 工具栏支持
         .toolbar {
@@ -144,26 +150,6 @@ struct ContentView: View {
                     .keyboardShortcut("o", modifiers: .command)
                     .help("导入 PDF 文件并自动分析 (⌘O)")
                 } else {
-                    // 扫描件场景下的去水印对比开关
-                    if !engine.hasTextLayer {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                engine.isComparisonMode.toggle()
-                                if engine.isComparisonMode {
-                                    let light = UserDefaults.standard.object(forKey: "removeLightWatermarks") as? Bool ?? true
-                                    let stamps = UserDefaults.standard.object(forKey: "removeColorStamps") as? Bool ?? false
-                                    engine.updateComparisonPreview(removeLightWatermarks: light, removeColorStamps: stamps)
-                                }
-                            }
-                        } label: {
-                            Label(
-                                engine.isComparisonMode ? "退出对比" : "去水印效果对比",
-                                systemImage: engine.isComparisonMode ? "eye.slash" : "eye"
-                            )
-                        }
-                        .help("查看 Core Image 通道过滤前后的去水印净化对比效果")
-                    }
-
                     Button(action: openFileAction) {
                         Label("更换文件", systemImage: "doc.badge.plus")
                     }

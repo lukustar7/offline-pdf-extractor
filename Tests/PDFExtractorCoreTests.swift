@@ -145,19 +145,22 @@ struct PDFExtractorCoreTests {
 
         suite.run("三大处理模式文案与系统映射一致性") {
             let m1 = PDFProcessingScenario.electronicTextWithTextWatermark
-            try require(m1.title == "直接提取文字", "模式1大白话标题不正确")
+            try require(m1.title == "可选文字 + 文字水印", "模式1大白话标题不正确")
             try require(m1.extractionMode == .textOnly, "模式1提取模式不正确")
-            try require(m1.systemImage == "bolt.fill", "模式1图标不正确")
+            try require(m1.watermarkRemovalMode == .textLayerOnly, "模式1去水印模式映射不正确")
+            try require(m1.systemImage == "text.badge.checkmark", "模式1图标不正确")
 
             let m2 = PDFProcessingScenario.scannedTextWithTextWatermark
-            try require(m2.title == "扫描件图文识别", "模式2大白话标题不正确")
+            try require(m2.title == "扫描正文 + 文字水印", "模式2大白话标题不正确")
             try require(m2.extractionMode == .ocrOnly, "模式2提取模式不正确")
-            try require(m2.systemImage == "doc.viewfinder.fill", "模式2图标不正确")
+            try require(m2.watermarkRemovalMode == .textWatermarkOverScan, "模式2去水印模式映射不正确")
+            try require(m2.systemImage == "doc.viewfinder", "模式2图标不正确")
 
             let m3 = PDFProcessingScenario.fullyScanned
-            try require(m3.title == "强力去印识别", "模式3大白话标题不正确")
+            try require(m3.title == "扫描正文 + 纸印水印", "模式3大白话标题不正确")
             try require(m3.extractionMode == .ocrOnly, "模式3提取模式不正确")
-            try require(m3.systemImage == "shield.checkerboard", "模式3图标不正确")
+            try require(m3.watermarkRemovalMode == .scannedWatermarkOverScan, "模式3去水印模式映射不正确")
+            try require(m3.systemImage == "sparkles.rectangle.stack", "模式3图标不正确")
         }
     }
 

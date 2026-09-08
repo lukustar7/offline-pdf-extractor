@@ -1,8 +1,52 @@
 import SwiftUI
+import AppKit
+
+// MARK: - App 委托 (负责窗口生命周期与 Dock 点击重新唤醒)
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    static weak var mainWindow: NSWindow?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DispatchQueue.main.async {
+            if let window = NSApp.windows.first(where: { $0.canBecomeMain }) {
+                Self.mainWindow = window
+                window.delegate = self
+            }
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            if let window = Self.mainWindow {
+                window.makeKeyAndOrderFront(nil)
+                sender.activate(ignoringOtherApps: true)
+                return true
+            }
+            for window in sender.windows where window.canBecomeMain {
+                Self.mainWindow = window
+                window.delegate = self
+                window.makeKeyAndOrderFront(nil)
+                sender.activate(ignoringOtherApps: true)
+                return true
+            }
+        }
+        return true
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender === Self.mainWindow {
+            sender.orderOut(nil)
+            return false
+        }
+        return true
+    }
+}
 
 // MARK: - App 入口
 @main
 struct PDFExtractorApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
         WindowGroup {
             ContentView()

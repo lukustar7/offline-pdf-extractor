@@ -6,9 +6,9 @@ import Foundation
 /// 该类型保留为独立模型，便于日志、测试和后续扩展，不与具体界面绑定。
 enum WatermarkRemovalMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case auto = "智能诊断匹配（推荐）"
-    case modeA = "纯文本过滤（文字版 PDF 专用）"
-    case modeB = "物理遮罩 + OCR（正文扫描件 + 文字水印）"
-    case modeC = "OCR + 智能过滤（纯扫描件水印）"
+    case textLayerOnly = "纯文本过滤（矢量文字版专用）"
+    case textWatermarkOverScan = "OCR文字识别 + 水印词过滤（扫描件+文字水印）"
+    case scannedWatermarkOverScan = "图像背景净化 + OCR识别（全扫描件+纸印水印）"
 
     var id: String { rawValue }
 }
@@ -38,33 +38,33 @@ enum PDFProcessingScenario: String, CaseIterable, Identifiable, Codable, Sendabl
     var title: String {
         switch self {
         case .electronicTextWithTextWatermark:
-            return "直接提取文字"
+            return "可选文字 + 文字水印"
         case .scannedTextWithTextWatermark:
-            return "扫描件图文识别"
+            return "扫描正文 + 文字水印"
         case .fullyScanned:
-            return "强力去印识别"
+            return "扫描正文 + 纸印水印"
         }
     }
 
     var subtitle: String {
         switch self {
         case .electronicTextWithTextWatermark:
-            return "常规活字 1秒搞定\n保留排版与高清插图"
+            return "常规电子文档 · 1秒极速导出\n保留清晰排版与原图"
         case .scannedTextWithTextWatermark:
-            return "清晰扫描·拍照图片\n高精文字识别与切图"
+            return "纸质拍照扫描 · 后加文字水印\n原生高精识别与智能切图"
         case .fullyScanned:
-            return "红章公章·深色底纹\n先滤印净化后再识别"
+            return "全纸质扫描件 · 水印印在纸上\n背景底纹自动净化后识别"
         }
     }
 
     var systemImage: String {
         switch self {
         case .electronicTextWithTextWatermark:
-            return "bolt.fill"
+            return "text.badge.checkmark"
         case .scannedTextWithTextWatermark:
-            return "doc.viewfinder.fill"
+            return "doc.viewfinder"
         case .fullyScanned:
-            return "shield.checkerboard"
+            return "sparkles.rectangle.stack"
         }
     }
 
@@ -80,22 +80,22 @@ enum PDFProcessingScenario: String, CaseIterable, Identifiable, Codable, Sendabl
     var watermarkRemovalMode: WatermarkRemovalMode {
         switch self {
         case .electronicTextWithTextWatermark:
-            return .modeA
+            return .textLayerOnly
         case .scannedTextWithTextWatermark:
-            return .modeB
+            return .textWatermarkOverScan
         case .fullyScanned:
-            return .modeC
+            return .scannedWatermarkOverScan
         }
     }
 
     var statusDescription: String {
         switch self {
         case .electronicTextWithTextWatermark:
-            return "读取 PDF 文本层与高清插图，极速提取，不重新 OCR。"
+            return "读取 PDF 文本层与高清插图，极速提取，无需重新 OCR。"
         case .scannedTextWithTextWatermark:
-            return "使用苹果原生 Vision OCR 识别扫描图像文字，并智能定位截取插图。"
+            return "滤除文字水印，调用苹果原生 Vision OCR 识别图像文字，并精准截取插图。"
         case .fullyScanned:
-            return "执行红通道公章消除与色阶洗白预处理后识别文字，并智能定位截取插图。"
+            return "自动执行背景底纹与印章多通道净化预处理，随后高精识别文字与插图。"
         }
     }
 }

@@ -29,7 +29,7 @@ STAGING_MACOS="${STAGING_CONTENTS}/MacOS"
 STAGING_RESOURCES="${STAGING_CONTENTS}/Resources"
 PREVIOUS_APP=".build/previous-${APP_NAME}.app"
 
-echo "=== 构建 macOS PDF 文字提取工具 v1.6.0 (纯血 Apple Silicon ARM64) ==="
+echo "=== 构建 macOS PDF 文字提取工具 v1.7.0 (纯血 Apple Silicon ARM64) ==="
 
 echo "1/6 校验配置并运行核心测试..."
 plutil -lint Info.plist >/dev/null

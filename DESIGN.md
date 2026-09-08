@@ -1,6 +1,6 @@
 ---
 name: "PDF Text & Watermark Extractor (PDF 文字提取与去水印)"
-version: "1.6.0"
+version: "1.7.0"
 description: "Apple HIG compliant macOS native document productivity app design system. Features crystal-clear translucent vibrancy, physical paper elevation, zero-scroll inspector, and synchronized OCR workflow."
 author: "Google Antigravity & Design Team"
 specification: "Google Stitch Design MD v1.0 / W3C DTCG Aligned"

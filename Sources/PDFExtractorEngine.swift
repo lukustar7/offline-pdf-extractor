@@ -27,9 +27,6 @@ final class PDFExtractorEngine: ObservableObject {
     @Published var isDragOver = false
     @Published var isCopied = false
     @Published var thumbnails: [Int: NSImage] = [:]
-    @Published var comparisonOriginal: NSImage?
-    @Published var comparisonFiltered: NSImage?
-    @Published var isComparisonMode = false
     @Published var zoomScale: CGFloat = 1.0
     @Published var isScanningAnimating = false
     @Published var hasTextLayer = true
@@ -179,14 +176,11 @@ final class PDFExtractorEngine: ObservableObject {
         isCopied = false
         showCloseConfirm = false
         thumbnails = [:]
-        comparisonOriginal = nil
-        comparisonFiltered = nil
-        isComparisonMode = false
         zoomScale = 1.0
         hasTextLayer = true
     }
 
-    // MARK: 缩略图与去水印对比支持
+    // MARK: 缩略图支持
 
     /// 按需加载指定页码的轻量缩略图
     func loadThumbnail(for pageNumber: Int) {
@@ -207,27 +201,6 @@ final class PDFExtractorEngine: ObservableObject {
         let end = min(pdfTotalPages, pageNumber + 5)
         for p in start...end {
             loadThumbnail(for: p)
-        }
-    }
-
-    /// 针对当前页生成去水印前后对比图像
-    func updateComparisonPreview(removeLightWatermarks: Bool, removeColorStamps: Bool) {
-        guard let document = pdfDocument,
-              currentPage >= 1,
-              currentPage <= pdfTotalPages,
-              let page = document.page(at: currentPage - 1) else {
-            comparisonOriginal = nil
-            comparisonFiltered = nil
-            return
-        }
-
-        if let result = PDFThumbnailLoader.watermarkComparisonPreview(
-            for: page,
-            removeLightWatermarks: removeLightWatermarks,
-            removeColorStamps: removeColorStamps
-        ) {
-            comparisonOriginal = result.original
-            comparisonFiltered = result.filtered
         }
     }
 
